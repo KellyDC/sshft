@@ -1,0 +1,70 @@
+name: "SSH File Transfer"
+description: "Transfer files or folders to a remote server via SSH"
+author: "KellyDC"
+inputs:
+  host:
+    description: "SSH host to connect to"
+    required: true
+  port:
+    description: "SSH port"
+    required: false
+    default: "22"
+  username:
+    description: "SSH username"
+    required: true
+  key:
+    description: "SSH private key"
+    required: true
+  passphrase:
+    description: "Passphrase for the SSH private key"
+    required: false
+  source:
+    description: "Source file or directory to transfer"
+    required: true
+  destination:
+    description: "Destination path on the remote server"
+    required: true
+  flags:
+    description: "Additional flags to pass to scp (e.g., -r for recursive)"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup SSH key
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        echo "Host *" > ~/.ssh/config
+        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        if [ ! -z "${{ inputs.passphrase }}" ]; then
+          eval $(ssh-agent)
+          echo "${{ inputs.passphrase }}" | ssh-add ~/.ssh/id_rsa
+        fi
+
+    - name: Transfer files
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.flags }}" ]; then
+          # Auto-detect if source is a directory
+          if [ -d "${{ inputs.source }}" ]; then
+            scp -P ${{ inputs.port }} -r "${{ inputs.source }}" ${{ inputs.username }}@${{ inputs.host }}:"${{ inputs.destination }}"
+          else
+            scp -P ${{ inputs.port }} "${{ inputs.source }}" ${{ inputs.username }}@${{ inputs.host }}:"${{ inputs.destination }}"
+          fi
+        else
+          scp -P ${{ inputs.port }} ${{ inputs.flags }} "${{ inputs.source }}" ${{ inputs.username }}@${{ inputs.host }}:"${{ inputs.destination }}"
+        fi
+
+    - name: Cleanup
+      shell: bash
+      run: |
+        rm -f ~/.ssh/id_rsa
+        rm -f ~/.ssh/config
+
+branding:
+  icon: "upload-cloud"
+  color: "blue"
