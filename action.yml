@@ -80,16 +80,7 @@ runs:
         fi
         
         # Create SSH config with appropriate security settings
-        cat > "$SSH_CONFIG_FILE" <<EOF
-        Host ${{ inputs.host }}
-          Port ${{ inputs.port }}
-          User ${{ inputs.username }}
-          IdentityFile $SSH_KEY_FILE
-          BatchMode yes
-          ConnectTimeout 30
-          ServerAliveInterval 60
-          ServerAliveCountMax 10
-        EOF   
+        printf "Host %s\nPort %s\nUser %s\nIdentityFile %s\nBatchMode yes\nConnectTimeout 30\nServerAliveInterval 60\nServerAliveCountMax 10\n" "${{ inputs.host }}" "${{ inputs.port }}" "${{ inputs.username }}" "$SSH_KEY_FILE" > "$SSH_CONFIG_FILE"
         
         # Configure host key checking based on input
         if [ "${{ inputs.strict_host_key_checking }}" = "false" ]; then
