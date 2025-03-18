@@ -24,49 +24,174 @@ inputs:
   destination:
     description: "Destination path on the remote server"
     required: true
+  direction:
+    description: "Transfer direction"
+    required: false
+    default: "upload"
+  recursive:
+    description: "Transfer files recursively"
+    required: false
+    default: false
   flags:
-    description: "Additional flags to pass to scp (e.g., -r for recursive)"
+    description: "Additional flags to pass to the `scp` command"
     required: false
     default: ""
+  strict_host_key_checking:
+    description: "Enable strict host key checking"
+    required: false
+    default: "true"
+outputs:
+  success:
+    description: "File transfer was successful"
+  error:
+    description: "An error occurred during file transfer"
 
 runs:
   using: "composite"
   steps:
-    - name: Setup SSH key
+    - name: Setup SSH key and configuration
       shell: bash
       run: |
+        set -e
+        # Create SSH directory with correct permissions
         mkdir -p ~/.ssh
-        echo "${{ inputs.key }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        # More secure SSH config (only disable for the specific host)
-        echo "Host ${{ inputs.host }}" > ~/.ssh/config
-        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
-        echo "  UserKnownHostsFile=/dev/null" >> ~/.ssh/config
-        if [ ! -z "${{ inputs.passphrase }}" ]; then
-          eval $(ssh-agent)
-          echo "${{ inputs.passphrase }}" | ssh-add ~/.ssh/id_rsa
+        chmod 700 ~/.ssh
+        
+        # Generate a unique key filename to avoid conflicts with existing keys
+        SSH_KEY_FILE="$HOME/.ssh/sshft_key_$(date +%s)_$RANDOM"
+        SSH_CONFIG_FILE="$HOME/.ssh/sshft_config_$(date +%s)_$RANDOM"
+        SSH_KNOWN_HOSTS="$HOME/.ssh/sshft_known_hosts_$(date +%s)_$RANDOM"
+        
+        # Export the key path for other steps to use
+        echo "SSH_KEY_FILE=$SSH_KEY_FILE" >> $GITHUB_ENV
+        echo "SSH_CONFIG_FILE=$SSH_CONFIG_FILE" >> $GITHUB_ENV
+        echo "SSH_KNOWN_HOSTS=$SSH_KNOWN_HOSTS" >> $GITHUB_ENV
+        
+        # Save SSH key with proper permissions (before writing content)
+        touch "$SSH_KEY_FILE"
+        chmod 600 "$SSH_KEY_FILE"
+        echo "${{ inputs.key }}" > "$SSH_KEY_FILE"
+        
+        # Verify the key is valid
+        if ! ssh-keygen -l -f "$SSH_KEY_FILE" &>/dev/null; then
+          echo "Error: The provided SSH key appears to be invalid"
+          rm -f "$SSH_KEY_FILE"
+          exit 1
+        fi
+        
+        # Create SSH config with appropriate security settings
+        cat > "$SSH_CONFIG_FILE" <<EOF
+        Host ${{ inputs.host }}
+          Port ${{ inputs.port }}
+          User ${{ inputs.username }}
+          IdentityFile $SSH_KEY_FILE
+          BatchMode yes
+          ConnectTimeout 30
+          ServerAliveInterval 60
+          ServerAliveCountMax 10
+        EOF   
+        
+        # Configure host key checking based on input
+        if [ "${{ inputs.strict_host_key_checking }}" = "false" ]; then
+          echo "  StrictHostKeyChecking no" >> "$SSH_CONFIG_FILE"
+          echo "  UserKnownHostsFile=/dev/null" >> "$SSH_CONFIG_FILE"
+        else
+          # First try to scan the host key
+          touch "$SSH_KNOWN_HOSTS"
+          chmod 600 "$SSH_KNOWN_HOSTS"
+          ssh-keyscan -p ${{ inputs.port }} -H ${{ inputs.host }} >> "$SSH_KNOWN_HOSTS" 2>/dev/null || true
+          echo "  StrictHostKeyChecking yes" >> "$SSH_CONFIG_FILE"
+          echo "  UserKnownHostsFile=$SSH_KNOWN_HOSTS" >> "$SSH_CONFIG_FILE"
+        fi
+        
+        chmod 600 "$SSH_CONFIG_FILE"
+        
+        # Handle SSH key passphrase if provided
+        if [ -n "${{ inputs.passphrase }}" ]; then
+          eval $(ssh-agent -s)
+          echo "${{ inputs.passphrase }}" | ssh-add "$SSH_KEY_FILE"
+        fi
+
+    - name: Verify SSH connection
+      shell: bash
+      run: |
+        if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "echo SSH connection successful"; then
+          echo "Error: Failed to establish SSH connection"
+          exit 1
         fi
 
     - name: Transfer files
       shell: bash
+      id: transfer
       run: |
-        if [ -z "${{ inputs.flags }}" ]; then
-          # Auto-detect if source is a directory
-          if [ -d "${{ inputs.source }}" ]; then
-            scp -P ${{ inputs.port }} -r "${{ inputs.source }}" ${{ inputs.username }}@${{ inputs.host }}:"${{ inputs.destination }}"
+        set -e
+        echo "Starting file transfer..."
+        
+        # Prepare command based on inputs
+        if [[ "${{ inputs.direction }}" == "upload" ]]; then
+          # Upload mode
+          if [[ "${{ inputs.recursive }}" == "true" ]] || [ -d "${{ inputs.source }}" ]; then
+            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\" -r"
           else
-            scp -P ${{ inputs.port }} "${{ inputs.source }}" ${{ inputs.username }}@${{ inputs.host }}:"${{ inputs.destination }}"
+            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\""
+          fi
+          
+          # Add any additional flags
+          if [ -n "${{ inputs.flags }}" ]; then
+            transfer_cmd+=" ${{ inputs.flags }}"
+          fi
+          
+          # Execute the transfer
+          if eval ${transfer_cmd} "\"${{ inputs.source }}\"" ${{ inputs.host }}:\"${{ inputs.destination }}\"; then
+            echo "success=true" >> $GITHUB_OUTPUT
+            echo "File transfer completed successfully"
+          else
+            echo "error=File transfer failed" >> $GITHUB_OUTPUT
+            exit 1
           fi
         else
-          scp -P ${{ inputs.port }} ${{ inputs.flags }} "${{ inputs.source }}" ${{ inputs.username }}@${{ inputs.host }}:"${{ inputs.destination }}"
+          # Download mode
+          if [[ "${{ inputs.recursive }}" == "true" ]]; then
+            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\" -r"
+          else
+            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\""
+          fi
+          
+          # Add any additional flags
+          if [ -n "${{ inputs.flags }}" ]; then
+            transfer_cmd+=" ${{ inputs.flags }}"
+          fi
+          
+          # Execute the transfer
+          if eval ${transfer_cmd} ${{ inputs.host }}:\"${{ inputs.source }}\" "\"${{ inputs.destination }}\""; then
+            echo "success=true" >> $GITHUB_OUTPUT
+            echo "File transfer completed successfully"
+          else
+            echo "error=File transfer failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
         fi
 
-    - name: Cleanup
+    - name: Cleanup SSH files securely
       shell: bash
+      if: always()
       run: |
-        rm -f ~/.ssh/id_rsa
-        rm -f ~/.ssh/config
+        # Terminate any ssh-agent process
+        if [ -n "$SSH_AGENT_PID" ]; then
+          ssh-agent -k || true
+        fi
+        
+        # Securely remove SSH files
+        if [ -f "$SSH_KEY_FILE" ]; then
+          # Overwrite with zeros before deleting
+          dd if=/dev/zero of="$SSH_KEY_FILE" bs=1k count=1 conv=notrunc >/dev/null 2>&1 || true
+          rm -f "$SSH_KEY_FILE"
+        fi
+        
+        # Remove other temporary SSH files
+        rm -f "$SSH_CONFIG_FILE"
+        rm -f "$SSH_KNOWN_HOSTS"
 
 branding:
-  icon: "upload-cloud" # Change this to any valid Feather icon name
+  icon: "upload-cloud" 
   color: "blue"
