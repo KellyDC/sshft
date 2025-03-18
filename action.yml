@@ -66,5 +66,5 @@ runs:
         rm -f ~/.ssh/config
 
 branding:
-  icon: "upload-cloud"
+  icon: "upload-cloud" # Change this to any valid Feather icon name
   color: "blue"
