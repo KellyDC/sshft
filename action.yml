@@ -38,8 +38,10 @@ runs:
         mkdir -p ~/.ssh
         echo "${{ inputs.key }}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        echo "Host *" > ~/.ssh/config
+        # More secure SSH config (only disable for the specific host)
+        echo "Host ${{ inputs.host }}" > ~/.ssh/config
         echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        echo "  UserKnownHostsFile=/dev/null" >> ~/.ssh/config
         if [ ! -z "${{ inputs.passphrase }}" ]; then
           eval $(ssh-agent)
           echo "${{ inputs.passphrase }}" | ssh-add ~/.ssh/id_rsa
