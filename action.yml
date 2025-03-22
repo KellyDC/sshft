@@ -31,11 +31,7 @@ inputs:
   recursive:
     description: "Transfer files recursively"
     required: false
-    default: false
-  flags:
-    description: "Additional flags to pass to the `scp` command"
-    required: false
-    default: ""
+    default: true
   strict_host_key_checking:
     description: "Enable strict host key checking"
     required: false
@@ -52,6 +48,7 @@ runs:
     - name: Setup SSH key and configuration
       shell: bash
       run: |
+        # This ensures that the action stops if any part of it encounters an error
         set -e
         # Create SSH directory with correct permissions
         mkdir -p ~/.ssh
@@ -118,50 +115,114 @@ runs:
         set -e
         echo "Starting file transfer..."
         
-        # Prepare command based on inputs
-        if [[ "${{ inputs.direction }}" == "upload" ]]; then
-          # Upload mode
-          if [[ "${{ inputs.recursive }}" == "true" ]] || [ -d "${{ inputs.source }}" ]; then
-            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\" -r"
-          else
-            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\""
-          fi
-          
-          # Add any additional flags
-          if [ -n "${{ inputs.flags }}" ]; then
-            transfer_cmd+=" ${{ inputs.flags }}"
-          fi
-          
-          # Execute the transfer
-          if eval ${transfer_cmd} "\"${{ inputs.source }}\"" ${{ inputs.host }}:\"${{ inputs.destination }}\"; then
-            echo "success=true" >> $GITHUB_OUTPUT
-            echo "File transfer completed successfully"
-          else
-            echo "error=File transfer failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+        # Create temp directory for operations
+        TEMP_DIR=$(mktemp -d)
+        # Set cleanup trap for unexpected exits
+        cleanup() {
+          echo "Cleaning up temporary files..."
+          rm -rf "$TEMP_DIR" 2>/dev/null || true
+          ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -rf ~/temp_sshft_*.tar.gz" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+        
+        # Get the base name of the source path for the tar.gz file
+        if [[ "${{ inputs.source }}" == */ ]]; then
+          SOURCE_PATH="${{ inputs.source }%/}"
         else
-          # Download mode
-          if [[ "${{ inputs.recursive }}" == "true" ]]; then
-            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\" -r"
+          SOURCE_PATH="${{ inputs.source }}"
+        fi
+        BASE_NAME=$(basename "$SOURCE_PATH")
+        TAR_FILE="temp_sshft_${BASE_NAME}.tar.gz"
+        
+        # Check if the source exists
+        if [ ! -e "$SOURCE_PATH" ]; then
+          echo "Error: Source file or directory does not exist: $SOURCE_PATH"
+          exit 1
+        fi
+        
+        if [[ "${{ inputs.direction }}" == "upload" ]]; then
+          # UPLOAD: Local -> Remote
+          echo "Compressing source files locally..."
+          if [ -d "$SOURCE_PATH" ]; then
+            # If source is a directory, compress its contents
+            tar -czf "$TEMP_DIR/$TAR_FILE" -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")"
           else
-            transfer_cmd="scp -F \"$SSH_CONFIG_FILE\""
+            # If source is a file
+            tar -czf "$TEMP_DIR/$TAR_FILE" -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")"
           fi
           
-          # Add any additional flags
-          if [ -n "${{ inputs.flags }}" ]; then
-            transfer_cmd+=" ${{ inputs.flags }}"
-          fi
-          
-          # Execute the transfer
-          if eval ${transfer_cmd} ${{ inputs.host }}:\"${{ inputs.source }}\" "\"${{ inputs.destination }}\""; then
-            echo "success=true" >> $GITHUB_OUTPUT
-            echo "File transfer completed successfully"
-          else
+          # Transfer the compressed file to remote server
+          echo "Transferring compressed file to remote server..."
+          if ! scp -F "$SSH_CONFIG_FILE" "$TEMP_DIR/$TAR_FILE" ${{ inputs.host }}:~/"$TAR_FILE"; then
+            echo "Error: Failed to transfer compressed file to remote server"
             echo "error=File transfer failed" >> $GITHUB_OUTPUT
             exit 1
           fi
+          
+          # Verify destination directory exists and is writable
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -d \"${{ inputs.destination }}\" ] && [ -w \"${{ inputs.destination }}\" ]"; then
+            echo "Error: Destination directory does not exist or is not writable"
+            echo "error=Destination directory issue" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Extract on remote and move to destination
+          echo "Extracting files on remote server..."
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "mkdir -p ~/temp_extract && tar -xzf ~/$TAR_FILE -C ~/temp_extract && cp -r ~/temp_extract/$(basename \"$SOURCE_PATH\")/* \"${{ inputs.destination }}/\" && rm -rf ~/temp_extract ~/$TAR_FILE"; then
+            echo "Error: Failed to extract files on remote server"
+            echo "error=Remote extraction failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+        else
+          # DOWNLOAD: Remote -> Local
+          # Verify remote source exists
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -e \"${{ inputs.source }}\" ]"; then
+            echo "Error: Remote source does not exist"
+            echo "error=Remote source not found" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Compress on remote server
+          echo "Compressing files on remote server..."
+          REMOTE_SOURCE="${{ inputs.source }}"
+          if [[ "$REMOTE_SOURCE" == */ ]]; then
+            REMOTE_SOURCE="${REMOTE_SOURCE%/}"
+          fi
+          
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf ~/$TAR_FILE -C \$(dirname \"$REMOTE_SOURCE\") \$(basename \"$REMOTE_SOURCE\")"; then
+            echo "Error: Failed to compress files on remote server"
+            echo "error=Remote compression failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Download the compressed file
+          echo "Downloading compressed file..."
+          if ! scp -F "$SSH_CONFIG_FILE" ${{ inputs.host }}:~/"$TAR_FILE" "$TEMP_DIR/$TAR_FILE"; then
+            echo "Error: Failed to download compressed file"
+            echo "error=Download failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Create destination directory if it doesn't exist
+          mkdir -p "${{ inputs.destination }}"
+          
+          # Extract locally
+          echo "Extracting files locally..."
+          if ! tar -xzf "$TEMP_DIR/$TAR_FILE" -C "$TEMP_DIR" && cp -r "$TEMP_DIR/$(basename "$REMOTE_SOURCE")"/* "${{ inputs.destination }}/"; then
+            echo "Error: Failed to extract files locally"
+            echo "error=Local extraction failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Clean up remote temporary file
+          ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -f ~/$TAR_FILE" || true
         fi
+        
+        echo "File transfer completed successfully"
+        echo "success=true" >> $GITHUB_OUTPUT
+        
+        # Cleanup is handled by the trap
 
     - name: Cleanup SSH files securely
       shell: bash
