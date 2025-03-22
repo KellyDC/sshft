@@ -126,10 +126,9 @@ runs:
         trap cleanup EXIT
         
         # Get the base name of the source path for the tar.gz file
-        if [[ "${{ inputs.source }}" == */ ]]; then
-          SOURCE_PATH="${{ inputs.source }%/}"
-        else
-          SOURCE_PATH="${{ inputs.source }}"
+        SOURCE_PATH="${{ inputs.source }}"
+        if [[ "$SOURCE_PATH" == */ ]]; then
+          SOURCE_PATH="${SOURCE_PATH%/}"
         fi
         BASE_NAME=$(basename "$SOURCE_PATH")
         TAR_FILE="temp_sshft_${BASE_NAME}.tar.gz"
