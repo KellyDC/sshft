@@ -166,8 +166,10 @@ runs:
           fi
           
           # Extract on remote and move to destination
+          # Fix: Pre-calculate the basename locally and use it in the remote command
+          BASENAME_SOURCE=$(basename "$SOURCE_PATH")
           echo "Extracting files on remote server..."
-          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "mkdir -p ~/temp_extract && tar -xzf ~/$TAR_FILE -C ~/temp_extract && cp -r ~/temp_extract/$(basename \"$SOURCE_PATH\")/* \"${{ inputs.destination }}/\" && rm -rf ~/temp_extract ~/$TAR_FILE"; then
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "mkdir -p ~/temp_extract && tar -xzf ~/$TAR_FILE -C ~/temp_extract && cp -r ~/temp_extract/$BASENAME_SOURCE/* \"${{ inputs.destination }}/\" && rm -rf ~/temp_extract ~/$TAR_FILE"; then
             echo "Error: Failed to extract files on remote server"
             echo "error=Remote extraction failed" >> $GITHUB_OUTPUT
             exit 1
@@ -189,7 +191,10 @@ runs:
             REMOTE_SOURCE="${REMOTE_SOURCE%/}"
           fi
           
-          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf ~/$TAR_FILE -C \$(dirname \"$REMOTE_SOURCE\") \$(basename \"$REMOTE_SOURCE\")"; then
+          # Fix: Pre-calculate dirname and basename for the remote command
+          REMOTE_DIR=$(dirname "$REMOTE_SOURCE")
+          REMOTE_BASE=$(basename "$REMOTE_SOURCE")
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf ~/$TAR_FILE -C \"$REMOTE_DIR\" \"$REMOTE_BASE\""; then
             echo "Error: Failed to compress files on remote server"
             echo "error=Remote compression failed" >> $GITHUB_OUTPUT
             exit 1
@@ -207,8 +212,9 @@ runs:
           mkdir -p "${{ inputs.destination }}"
           
           # Extract locally
+          # Fix: Use pre-calculated basename
           echo "Extracting files locally..."
-          if ! tar -xzf "$TEMP_DIR/$TAR_FILE" -C "$TEMP_DIR" && cp -r "$TEMP_DIR/$(basename "$REMOTE_SOURCE")"/* "${{ inputs.destination }}/"; then
+          if ! tar -xzf "$TEMP_DIR/$TAR_FILE" -C "$TEMP_DIR" && cp -r "$TEMP_DIR/$REMOTE_BASE"/* "${{ inputs.destination }}/"; then
             echo "Error: Failed to extract files locally"
             echo "error=Local extraction failed" >> $GITHUB_OUTPUT
             exit 1
