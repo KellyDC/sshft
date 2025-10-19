@@ -1,0 +1,29 @@
+# YAML Lint Configuration
+extends: default
+
+rules:
+  # Allow longer lines for readability
+  line-length:
+    max: 120
+    level: warning
+
+  # Allow trailing spaces in certain contexts
+  trailing-spaces:
+    level: warning
+
+  # Be more flexible with indentation
+  indentation:
+    spaces: 2
+    indent-sequences: true
+
+  # Allow empty values
+  empty-values:
+    forbid-in-block-mappings: false
+    forbid-in-flow-mappings: false
+
+  # Be flexible with comments
+  comments:
+    min-spaces-from-content: 1
+
+  # Allow document start markers
+  document-start: disable

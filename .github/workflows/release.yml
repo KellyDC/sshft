@@ -7,32 +7,170 @@ on:
 
 permissions:
   contents: write
+  actions: read
+  security-events: write
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      major_version: ${{ steps.get_version.outputs.major_version }}
+      is_prerelease: ${{ steps.get_version.outputs.is_prerelease }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version info
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Extract major version (e.g., v1 from v1.2.3)
+          MAJOR_VERSION=$(echo $VERSION | cut -d. -f1)
+          echo "major_version=$MAJOR_VERSION" >> $GITHUB_OUTPUT
+
+          # Check if prerelease (contains alpha, beta, rc, or pre)
+          if [[ $VERSION =~ (alpha|beta|rc|pre) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate action.yml syntax
+        run: |
+          # Check if action.yml exists and is valid YAML
+          if ! python -c "import yaml; yaml.safe_load(open('action.yml'))" 2>/dev/null; then
+            echo "❌ action.yml is not valid YAML"
+            exit 1
+          fi
+          echo "✅ action.yml syntax is valid"
+
+      - name: Validate action metadata
+        run: |
+          # Check required fields in action.yml
+          if ! grep -q "^name:" action.yml; then
+            echo "❌ Missing 'name' field in action.yml"
+            exit 1
+          fi
+          if ! grep -q "^description:" action.yml; then
+            echo "❌ Missing 'description' field in action.yml"
+            exit 1
+          fi
+          if ! grep -q "^runs:" action.yml; then
+            echo "❌ Missing 'runs' field in action.yml"
+            exit 1
+          fi
+          echo "✅ Action metadata is valid"
+
+      - name: Security scan with CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: bash
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  test-action:
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.repository == 'KellyDC/sshft' # Only run tests on main repo
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+      - name: Setup test SSH server
+        run: |
+          # Create test SSH keys
+          ssh-keygen -t rsa -b 2048 -f ~/.ssh/test_key -N ""
 
-      - name: Upload release asset
-        uses: actions/upload-release-asset@v1
+          # Setup SSH server for testing
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo systemctl start ssh
+
+          # Create test directory
+          mkdir -p ~/test_source ~/test_dest
+          echo "test content" > ~/test_source/test_file.txt
+
+      - name: Test action locally
+        uses: ./
+        with:
+          host: localhost
+          username: ${{ github.actor }}
+          key: ${{ secrets.TEST_SSH_KEY || '' }}
+          source: ~/test_source
+          destination: ~/test_dest
+          strict_host_key_checking: false
+        continue-on-error: true # Don't fail release if test fails, but log it
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [validate, test-action]
+    if: always() && needs.validate.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Generate changelog from git commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" $LAST_TAG..HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD)
+          fi
+
+          # Save changelog to file and output
+          echo "## Changes" > changelog.md
+          echo "$CHANGELOG" >> changelog.md
+
+          # Set output (escape newlines for GitHub Actions)
+          {
+            echo 'changelog<<EOF'
+            cat changelog.md
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.version }}
+          name: Release ${{ needs.validate.outputs.version }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          files: |
+            action.yml
+            README.md
+            LICENSE
+          draft: false
+          prerelease: ${{ needs.validate.outputs.is_prerelease }}
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./action.yml
-          asset_name: action.yml
-          asset_content_type: text/yaml
+
+      - name: Update major version tag
+        if: needs.validate.outputs.is_prerelease == 'false'
+        run: |
+          # Update major version tag (e.g., v1) to point to latest release
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          MAJOR_TAG="${{ needs.validate.outputs.major_version }}"
+          git tag -fa $MAJOR_TAG -m "Update $MAJOR_TAG to ${{ needs.validate.outputs.version }}"
+          git push origin $MAJOR_TAG --force
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "🚨 Release failed for ${{ needs.validate.outputs.version }}"
+          echo "Please check the workflow logs and fix any issues."

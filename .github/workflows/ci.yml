@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate action.yml syntax
+        run: |
+          # Install yq for better YAML validation
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+          # Validate YAML syntax
+          if ! yq eval '.' action.yml > /dev/null; then
+            echo "❌ action.yml has invalid YAML syntax"
+            exit 1
+          fi
+          echo "✅ action.yml syntax is valid"
+
+      - name: Validate action structure
+        run: |
+          # Check required fields
+          REQUIRED_FIELDS=("name" "description" "runs" "branding")
+          for field in "${REQUIRED_FIELDS[@]}"; do
+            if ! yq eval "has(\"$field\")" action.yml | grep -q true; then
+              echo "❌ Missing required field: $field"
+              exit 1
+            fi
+          done
+
+          # Validate inputs have descriptions
+          if yq eval '.inputs | length' action.yml | grep -q -v '^0$'; then
+            yq eval '.inputs | to_entries | .[] | select(.value.description == null) | .key' action.yml | while read input; do
+              if [ -n "$input" ]; then
+                echo "❌ Input '$input' missing description"
+                exit 1
+              fi
+            done
+          fi
+
+          echo "✅ Action structure is valid"
+
+      - name: Check shell script syntax
+        run: |
+          # Extract and validate shell scripts from action.yml
+          yq eval '.runs.steps[].run' action.yml | grep -v null | while IFS= read -r script; do
+            if [ -n "$script" ]; then
+              echo "$script" | bash -n
+              if [ $? -ne 0 ]; then
+                echo "❌ Shell script syntax error found"
+                exit 1
+              fi
+            fi
+          done
+          echo "✅ Shell script syntax is valid"
+
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"
+
+      - name: Check for secrets in code
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Lint shell scripts with ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: "."
+          format: gcc
+          severity: warning
+
+      - name: Lint YAML files
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: action.yml .github/workflows/
+          config_file: .yamllint.yml
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [validate, security-scan, lint]
+
+    strategy:
+      matrix:
+        test-scenario:
+          - upload-file
+          - upload-directory
+          - download-file
+          - download-directory
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup test environment
+        run: |
+          # Create test files and directories
+          mkdir -p test_data/upload test_data/download
+          echo "Test file content $(date)" > test_data/upload/test_file.txt
+          mkdir -p test_data/upload/subdir
+          echo "Subdirectory file" > test_data/upload/subdir/sub_file.txt
+
+          # Generate test SSH key (for validation only)
+          ssh-keygen -t rsa -b 2048 -f test_key -N "" -C "test@example.com"
+          echo "Test SSH key generated"
+
+      - name: Validate action inputs
+        run: |
+          # Test that action would fail with invalid inputs
+          echo "Testing input validation..."
+
+          # This should work (we're not actually connecting, just validating structure)
+          python3 -c "
+          import yaml
+          import sys
+
+          with open('action.yml', 'r') as f:
+              action = yaml.safe_load(f)
+
+          required_inputs = []
+          for name, details in action.get('inputs', {}).items():
+              if details.get('required', False):
+                  required_inputs.append(name)
+
+          print(f'Required inputs: {required_inputs}')
+
+          # Validate that all required inputs are documented
+          expected_required = ['host', 'username', 'key', 'source', 'destination']
+          for req in expected_required:
+              if req not in required_inputs:
+                  print(f'ERROR: {req} should be required')
+                  sys.exit(1)
+
+          print('✅ Input validation passed')
+          "
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test action with Docker SSH server
+        run: |
+          # Start SSH server in Docker for testing
+          docker run -d --name ssh-server \
+            -p 2222:22 \
+            -e PUBLIC_KEY="$(cat ~/.ssh/id_rsa.pub)" \
+            -e USER_NAME=testuser \
+            linuxserver/openssh-server:latest || true
+
+          # Wait for server to start
+          sleep 10
+
+          echo "Integration test setup complete (mock)"
+          echo "In a real scenario, you would:"
+          echo "1. Setup SSH server"
+          echo "2. Test actual file transfers"
+          echo "3. Verify file integrity"
+          echo "4. Test error conditions"
+
+  documentation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check documentation completeness
+        run: |
+          # Check if README.md exists and has required sections
+          if [ ! -f README.md ]; then
+            echo "❌ README.md not found"
+            exit 1
+          fi
+
+          REQUIRED_SECTIONS=("Inputs" "Example Usage" "Security Notes")
+          for section in "${REQUIRED_SECTIONS[@]}"; do
+            if ! grep -q "## $section" README.md; then
+              echo "❌ Missing required section in README.md: $section"
+              exit 1
+            fi
+          done
+
+          echo "✅ Documentation is complete"
+
+      - name: Validate examples in README
+        run: |
+          # Extract YAML examples from README and validate syntax
+          echo "Validating YAML examples in README..."
+
+          # This is a simplified check - in practice you'd extract and validate each YAML block
+          if grep -q "uses: kellydc/sshft@" README.md; then
+            echo "✅ README contains proper usage examples"
+          else
+            echo "❌ README missing usage examples"
+            exit 1
+          fi

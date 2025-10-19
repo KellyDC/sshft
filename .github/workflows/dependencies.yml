@@ -1,0 +1,69 @@
+name: Auto-Update Dependencies
+
+on:
+  schedule:
+    - cron: "0 6 */14 * 1" # Fortnightly (every 2 weeks) on Monday at 6 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-dependencies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for action updates
+        id: check_updates
+        run: |
+          # Check if actions in workflows are using latest versions
+          echo "Checking for GitHub Action updates..."
+
+          # List current action versions
+          find .github/workflows -name "*.yml" -exec grep -H "uses:" {} \; | \
+            grep -v "^#" | \
+            grep -E "@v[0-9]" | \
+            sort -u
+
+          echo "Manual review required for action updates"
+
+      - name: Create issue for updates
+        if: github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Fortnightly Dependency Check - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## Fortnightly Dependency Review
+
+            Please review the following for updates:
+
+            ### GitHub Actions
+            - [ ] Check for updates to actions/checkout
+            - [ ] Check for updates to github/codeql-action
+            - [ ] Check for updates to softprops/action-gh-release
+            - [ ] Review other third-party actions
+
+            ### Security
+            - [ ] Review security advisories
+            - [ ] Check for new security best practices
+            - [ ] Update dependencies if needed
+
+            ### Documentation
+            - [ ] Review and update README if needed
+            - [ ] Check example code is still valid
+
+            This is an automated fortnightly reminder.
+            `;
+
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['maintenance', 'dependencies']
+            });
