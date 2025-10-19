@@ -1,5 +1,5 @@
-name: "SSH File Transfer"
-description: "Transfer files or folders to a remote server via SSH"
+name: "Secure File Transfer"
+description: "A GitHub Action to securely transfer files over SSH using SCP with support for upload and download directions."
 author: "KellyDC"
 inputs:
   host:
@@ -31,7 +31,7 @@ inputs:
   recursive:
     description: "Transfer files recursively"
     required: false
-    default: true
+    default: "true"
   strict_host_key_checking:
     description: "Enable strict host key checking"
     required: false
@@ -39,8 +39,10 @@ inputs:
 outputs:
   success:
     description: "File transfer was successful"
+    value: ${{ steps.transfer.outputs.success }}
   error:
     description: "An error occurred during file transfer"
+    value: ${{ steps.transfer.outputs.error }}
 
 runs:
   using: "composite"
@@ -53,32 +55,32 @@ runs:
         # Create SSH directory with correct permissions
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
-        
+
         # Generate a unique key filename to avoid conflicts with existing keys
         SSH_KEY_FILE="$HOME/.ssh/sshft_key_$(date +%s)_$RANDOM"
         SSH_CONFIG_FILE="$HOME/.ssh/sshft_config_$(date +%s)_$RANDOM"
         SSH_KNOWN_HOSTS="$HOME/.ssh/sshft_known_hosts_$(date +%s)_$RANDOM"
-        
+
         # Export the key path for other steps to use
         echo "SSH_KEY_FILE=$SSH_KEY_FILE" >> $GITHUB_ENV
         echo "SSH_CONFIG_FILE=$SSH_CONFIG_FILE" >> $GITHUB_ENV
         echo "SSH_KNOWN_HOSTS=$SSH_KNOWN_HOSTS" >> $GITHUB_ENV
-        
+
         # Save SSH key with proper permissions (before writing content)
         touch "$SSH_KEY_FILE"
         chmod 600 "$SSH_KEY_FILE"
         echo "${{ inputs.key }}" > "$SSH_KEY_FILE"
-        
+
         # Verify the key is valid
         if ! ssh-keygen -l -f "$SSH_KEY_FILE" &>/dev/null; then
           echo "Error: The provided SSH key appears to be invalid"
           rm -f "$SSH_KEY_FILE"
           exit 1
         fi
-        
+
         # Create SSH config with appropriate security settings
         printf "Host %s\nPort %s\nUser %s\nIdentityFile %s\nBatchMode yes\nConnectTimeout 30\nServerAliveInterval 60\nServerAliveCountMax 10\n" "${{ inputs.host }}" "${{ inputs.port }}" "${{ inputs.username }}" "$SSH_KEY_FILE" > "$SSH_CONFIG_FILE"
-        
+
         # Configure host key checking based on input
         if [ "${{ inputs.strict_host_key_checking }}" = "false" ]; then
           echo "  StrictHostKeyChecking no" >> "$SSH_CONFIG_FILE"
@@ -91,9 +93,9 @@ runs:
           echo "  StrictHostKeyChecking yes" >> "$SSH_CONFIG_FILE"
           echo "  UserKnownHostsFile=$SSH_KNOWN_HOSTS" >> "$SSH_CONFIG_FILE"
         fi
-        
+
         chmod 600 "$SSH_CONFIG_FILE"
-        
+
         # Handle SSH key passphrase if provided
         if [ -n "${{ inputs.passphrase }}" ]; then
           eval $(ssh-agent -s)
@@ -114,7 +116,7 @@ runs:
       run: |
         set -e
         echo "Starting file transfer..."
-        
+
         # Create temp directory for operations
         TEMP_DIR=$(mktemp -d)
         # Set cleanup trap for unexpected exits
@@ -124,7 +126,7 @@ runs:
           ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -rf ~/temp_sshft_*.tar.gz" 2>/dev/null || true
         }
         trap cleanup EXIT
-        
+
         # Get the base name of the source path for the tar.gz file
         SOURCE_PATH="${{ inputs.source }}"
         if [[ "$SOURCE_PATH" == */ ]]; then
@@ -132,13 +134,13 @@ runs:
         fi
         BASE_NAME=$(basename "$SOURCE_PATH")
         TAR_FILE="temp_sshft_${BASE_NAME}.tar.gz"
-        
+
         # Check if the source exists
         if [ ! -e "$SOURCE_PATH" ]; then
           echo "Error: Source file or directory does not exist: $SOURCE_PATH"
           exit 1
         fi
-        
+
         if [[ "${{ inputs.direction }}" == "upload" ]]; then
           # UPLOAD: Local -> Remote
           echo "Compressing source files locally..."
@@ -223,10 +225,10 @@ runs:
           # Clean up remote temporary file
           ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -f ~/$TAR_FILE" || true
         fi
-        
+
         echo "File transfer completed successfully"
         echo "success=true" >> $GITHUB_OUTPUT
-        
+
         # Cleanup is handled by the trap
 
     - name: Cleanup SSH files securely
@@ -237,18 +239,18 @@ runs:
         if [ -n "$SSH_AGENT_PID" ]; then
           ssh-agent -k || true
         fi
-        
+
         # Securely remove SSH files
         if [ -f "$SSH_KEY_FILE" ]; then
           # Overwrite with zeros before deleting
           dd if=/dev/zero of="$SSH_KEY_FILE" bs=1k count=1 conv=notrunc >/dev/null 2>&1 || true
           rm -f "$SSH_KEY_FILE"
         fi
-        
+
         # Remove other temporary SSH files
         rm -f "$SSH_CONFIG_FILE"
         rm -f "$SSH_KNOWN_HOSTS"
 
 branding:
-  icon: "upload-cloud" 
+  icon: "upload-cloud"
   color: "blue"
