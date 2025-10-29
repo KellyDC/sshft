@@ -119,11 +119,22 @@ runs:
 
         # Create temp directory for operations
         TEMP_DIR=$(mktemp -d)
+
+        # Generate random string for unique temporary directories and files
+        RANDOM_ID=$(openssl rand -hex 8)
+        TIMESTAMP=$(date +%s)
+        UNIQUE_SUFFIX="${TIMESTAMP}_${RANDOM_ID}"
+
+        # Remote temporary directory path (using unique random name)
+        REMOTE_TEMP_DIR="/tmp/sshft_temp_${UNIQUE_SUFFIX}"
+
         # Set cleanup trap for unexpected exits
         cleanup() {
           echo "Cleaning up temporary files..."
+          # Clean up local temp directory
           rm -rf "$TEMP_DIR" 2>/dev/null || true
-          ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -rf ~/temp_sshft_*.tar.gz" 2>/dev/null || true
+          # Clean up remote temp directory and any temp files
+          ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -rf \"$REMOTE_TEMP_DIR\" /tmp/sshft_*_${UNIQUE_SUFFIX}.tar.gz" 2>/dev/null || true
         }
         trap cleanup EXIT
 
@@ -133,7 +144,7 @@ runs:
           SOURCE_PATH="${SOURCE_PATH%/}"
         fi
         BASE_NAME=$(basename "$SOURCE_PATH")
-        TAR_FILE="temp_sshft_${BASE_NAME}.tar.gz"
+        TAR_FILE="sshft_${BASE_NAME}_${UNIQUE_SUFFIX}.tar.gz"
 
         # Check if the source exists
         if [ ! -e "$SOURCE_PATH" ]; then
@@ -141,21 +152,80 @@ runs:
           exit 1
         fi
 
-        if [[ "${{ inputs.direction }}" == "upload" ]]; then
-          # UPLOAD: Local -> Remote
-          echo "Compressing source files locally..."
-          if [ -d "$SOURCE_PATH" ]; then
-            # If source is a directory, compress its contents
-            tar -czf "$TEMP_DIR/$TAR_FILE" -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")"
-          else
-            # If source is a file
-            tar -czf "$TEMP_DIR/$TAR_FILE" -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")"
+        # Function to check if a file is already compressed
+        is_compressed() {
+          local file="$1"
+          local mime_type
+          local extension
+          
+          # Get file extension
+          extension="${file##*.}"
+          extension=$(echo "$extension" | tr '[:upper:]' '[:lower:]')
+          
+          # Check common compressed file extensions
+          case "$extension" in
+            gz|tgz|tar.gz|bz2|tbz2|tar.bz2|xz|txz|tar.xz|zip|rar|7z|tar|lz4|zst)
+              return 0 ;;
+          esac
+          
+          # Check MIME type if file command is available
+          if command -v file >/dev/null 2>&1; then
+            mime_type=$(file -b --mime-type "$file" 2>/dev/null || echo "")
+            case "$mime_type" in
+              application/gzip|application/x-gzip|application/x-tar|application/zip|application/x-rar|application/x-7z-compressed|application/x-bzip2|application/x-xz)
+                return 0 ;;
+            esac
           fi
           
-          # Transfer the compressed file to remote server
-          echo "Transferring compressed file to remote server..."
-          if ! scp -F "$SSH_CONFIG_FILE" "$TEMP_DIR/$TAR_FILE" ${{ inputs.host }}:~/"$TAR_FILE"; then
-            echo "Error: Failed to transfer compressed file to remote server"
+          return 1
+        }
+
+        if [[ "${{ inputs.direction }}" == "upload" ]]; then
+          # UPLOAD: Local -> Remote
+          # Check if we need compression
+          NEEDS_COMPRESSION=true
+          TRANSFER_FILE=""
+          
+          if [ -f "$SOURCE_PATH" ] && is_compressed "$SOURCE_PATH"; then
+            echo "Source file is already compressed, transferring directly..."
+            NEEDS_COMPRESSION=false
+            TRANSFER_FILE="$SOURCE_PATH"
+          elif [ -d "$SOURCE_PATH" ]; then
+            # Check if directory contains only compressed files
+            COMPRESSED_COUNT=$(find "$SOURCE_PATH" -type f -exec sh -c 'case "${1##*.}" in gz|tgz|tar.gz|bz2|tbz2|tar.bz2|xz|txz|tar.xz|zip|rar|7z|tar|lz4|zst) exit 0;; *) exit 1;; esac' _ {} \; 2>/dev/null | wc -l || echo 0)
+            TOTAL_FILES=$(find "$SOURCE_PATH" -type f | wc -l)
+            
+            if [ "$COMPRESSED_COUNT" -eq "$TOTAL_FILES" ] && [ "$TOTAL_FILES" -gt 0 ]; then
+              echo "Directory contains only compressed files, compressing anyway for consistency..."
+            fi
+            
+            echo "Compressing directory..."
+            tar -czf "$TEMP_DIR/$TAR_FILE" -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")"
+            TRANSFER_FILE="$TEMP_DIR/$TAR_FILE"
+          else
+            echo "Compressing source file..."
+            tar -czf "$TEMP_DIR/$TAR_FILE" -C "$(dirname "$SOURCE_PATH")" "$(basename "$SOURCE_PATH")"
+            TRANSFER_FILE="$TEMP_DIR/$TAR_FILE"
+          fi
+          
+          # Create remote temp directory
+          echo "Creating remote temporary directory..."
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "mkdir -p \"$REMOTE_TEMP_DIR\""; then
+            echo "Error: Failed to create remote temporary directory"
+            echo "error=Remote temp dir creation failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Transfer the file to remote server
+          echo "Transferring file to remote server..."
+          if [ "$NEEDS_COMPRESSION" = true ]; then
+            REMOTE_FILE="$REMOTE_TEMP_DIR/$TAR_FILE"
+          else
+            REMOTE_FILE="$REMOTE_TEMP_DIR/$(basename "$SOURCE_PATH")"
+          fi
+          
+          if ! scp -F "$SSH_CONFIG_FILE" "$TRANSFER_FILE" "${{ inputs.host }}:$REMOTE_FILE"; then
+            echo "Error: Failed to transfer file to remote server"
             echo "error=File transfer failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -167,14 +237,22 @@ runs:
             exit 1
           fi
           
-          # Extract on remote and move to destination
-          # Fix: Pre-calculate the basename locally and use it in the remote command
+          # Extract/move files on remote server
           BASENAME_SOURCE=$(basename "$SOURCE_PATH")
-          echo "Extracting files on remote server..."
-          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "mkdir -p ~/temp_extract && tar -xzf ~/$TAR_FILE -C ~/temp_extract && cp -r ~/temp_extract/$BASENAME_SOURCE/* \"${{ inputs.destination }}/\" && rm -rf ~/temp_extract ~/$TAR_FILE"; then
-            echo "Error: Failed to extract files on remote server"
-            echo "error=Remote extraction failed" >> $GITHUB_OUTPUT
-            exit 1
+          if [ "$NEEDS_COMPRESSION" = true ]; then
+            echo "Extracting files on remote server..."
+            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cd \"$REMOTE_TEMP_DIR\" && tar -xzf \"$TAR_FILE\" && cp -r \"$BASENAME_SOURCE\"/* \"${{ inputs.destination }}/\""; then
+              echo "Error: Failed to extract files on remote server"
+              echo "error=Remote extraction failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          else
+            echo "Moving compressed file to destination..."
+            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cp \"$REMOTE_FILE\" \"${{ inputs.destination }}/\""; then
+              echo "Error: Failed to move file to destination"
+              echo "error=Remote file move failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           fi
           
         else
@@ -186,26 +264,65 @@ runs:
             exit 1
           fi
           
-          # Compress on remote server
-          echo "Compressing files on remote server..."
+          # Create remote temp directory
+          echo "Creating remote temporary directory..."
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "mkdir -p \"$REMOTE_TEMP_DIR\""; then
+            echo "Error: Failed to create remote temporary directory"
+            echo "error=Remote temp dir creation failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
           REMOTE_SOURCE="${{ inputs.source }}"
           if [[ "$REMOTE_SOURCE" == */ ]]; then
             REMOTE_SOURCE="${REMOTE_SOURCE%/}"
           fi
           
-          # Fix: Pre-calculate dirname and basename for the remote command
           REMOTE_DIR=$(dirname "$REMOTE_SOURCE")
           REMOTE_BASE=$(basename "$REMOTE_SOURCE")
-          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf ~/$TAR_FILE -C \"$REMOTE_DIR\" \"$REMOTE_BASE\""; then
-            echo "Error: Failed to compress files on remote server"
-            echo "error=Remote compression failed" >> $GITHUB_OUTPUT
-            exit 1
+          NEEDS_COMPRESSION=true
+          DOWNLOAD_FILE=""
+          
+          # Check if source is a single compressed file
+          if ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -f \"$REMOTE_SOURCE\" ]"; then
+            # Check if it's compressed by extension
+            case "${REMOTE_BASE##*.}" in
+              gz|tgz|tar.gz|bz2|tbz2|tar.bz2|xz|txz|tar.xz|zip|rar|7z|tar|lz4|zst)
+                echo "Remote source is already compressed, downloading directly..."
+                NEEDS_COMPRESSION=false
+                DOWNLOAD_FILE="$REMOTE_TEMP_DIR/$REMOTE_BASE"
+                # Copy file to temp directory
+                if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cp \"$REMOTE_SOURCE\" \"$DOWNLOAD_FILE\""; then
+                  echo "Error: Failed to copy remote file to temp directory"
+                  echo "error=Remote file copy failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "Compressing single file on remote server..."
+                DOWNLOAD_FILE="$REMOTE_TEMP_DIR/$TAR_FILE"
+                if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf \"$DOWNLOAD_FILE\" -C \"$REMOTE_DIR\" \"$REMOTE_BASE\""; then
+                  echo "Error: Failed to compress file on remote server"
+                  echo "error=Remote compression failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+                ;;
+            esac
+          else
+            # Directory - always compress for consistency
+            echo "Compressing directory on remote server..."
+            DOWNLOAD_FILE="$REMOTE_TEMP_DIR/$TAR_FILE"
+            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf \"$DOWNLOAD_FILE\" -C \"$REMOTE_DIR\" \"$REMOTE_BASE\""; then
+              echo "Error: Failed to compress directory on remote server"
+              echo "error=Remote compression failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           fi
           
-          # Download the compressed file
-          echo "Downloading compressed file..."
-          if ! scp -F "$SSH_CONFIG_FILE" ${{ inputs.host }}:~/"$TAR_FILE" "$TEMP_DIR/$TAR_FILE"; then
-            echo "Error: Failed to download compressed file"
+          # Download the file
+          echo "Downloading file from remote server..."
+          LOCAL_DOWNLOAD_FILE="$TEMP_DIR/$(basename "$DOWNLOAD_FILE")"
+          if ! scp -F "$SSH_CONFIG_FILE" "${{ inputs.host }}:$DOWNLOAD_FILE" "$LOCAL_DOWNLOAD_FILE"; then
+            echo "Error: Failed to download file"
             echo "error=Download failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -213,23 +330,37 @@ runs:
           # Create destination directory if it doesn't exist
           mkdir -p "${{ inputs.destination }}"
           
-          # Extract locally
-          # Fix: Use pre-calculated basename
-          echo "Extracting files locally..."
-          if ! tar -xzf "$TEMP_DIR/$TAR_FILE" -C "$TEMP_DIR" && cp -r "$TEMP_DIR/$REMOTE_BASE"/* "${{ inputs.destination }}/"; then
-            echo "Error: Failed to extract files locally"
-            echo "error=Local extraction failed" >> $GITHUB_OUTPUT
-            exit 1
+          # Extract/move files locally
+          if [ "$NEEDS_COMPRESSION" = true ]; then
+            echo "Extracting files locally..."
+            if ! tar -xzf "$LOCAL_DOWNLOAD_FILE" -C "$TEMP_DIR"; then
+              echo "Error: Failed to extract files locally"
+              echo "error=Local extraction failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            # Copy extracted content to destination
+            if ! cp -r "$TEMP_DIR/$REMOTE_BASE"/* "${{ inputs.destination }}/"; then
+              echo "Error: Failed to copy extracted files to destination"
+              echo "error=Local copy failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          else
+            echo "Moving downloaded compressed file to destination..."
+            if ! cp "$LOCAL_DOWNLOAD_FILE" "${{ inputs.destination }}/"; then
+              echo "Error: Failed to move downloaded file to destination"
+              echo "error=Local file move failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           fi
-          
-          # Clean up remote temporary file
-          ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -f ~/$TAR_FILE" || true
         fi
 
         echo "File transfer completed successfully"
         echo "success=true" >> $GITHUB_OUTPUT
 
-        # Cleanup is handled by the trap
+        # Manual cleanup (trap will also run)
+        echo "Cleaning up temporary files..."
+        rm -rf "$TEMP_DIR" 2>/dev/null || true
+        ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -rf \"$REMOTE_TEMP_DIR\"" 2>/dev/null || true
 
     - name: Cleanup SSH files securely
       shell: bash
