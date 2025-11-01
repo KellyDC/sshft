@@ -36,6 +36,12 @@ inputs:
     description: "Enable strict host key checking"
     required: false
     default: "true"
+  post_script:
+    description: "Optional inline script to run on the remote server after file transfer completes"
+    required: false
+  post_script_path:
+    description: "Optional path to a script on the remote server to run after file transfer completes"
+    required: false
 outputs:
   success:
     description: "File transfer was successful"
@@ -43,6 +49,15 @@ outputs:
   error:
     description: "An error occurred during file transfer"
     value: ${{ steps.transfer.outputs.error }}
+  script_executed:
+    description: "Whether a post-transfer script was executed"
+    value: ${{ steps.post_script.outputs.executed }}
+  script_output:
+    description: "Output from the post-transfer script execution"
+    value: ${{ steps.post_script.outputs.output }}
+  script_error:
+    description: "Error message if script execution failed"
+    value: ${{ steps.post_script.outputs.error }}
 
 runs:
   using: "composite"
@@ -361,6 +376,146 @@ runs:
         echo "Cleaning up temporary files..."
         rm -rf "$TEMP_DIR" 2>/dev/null || true
         ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "rm -rf \"$REMOTE_TEMP_DIR\"" 2>/dev/null || true
+
+    - name: Execute post-transfer script
+      shell: bash
+      id: post_script
+      if: success() && (inputs.post_script != '' || inputs.post_script_path != '')
+      run: |
+        set +e  # Don't fail immediately on errors for this step
+        echo "executed=false" >> $GITHUB_OUTPUT
+        echo "error=" >> $GITHUB_OUTPUT
+        echo "output=" >> $GITHUB_OUTPUT
+
+        # Generate random ID for temporary script file
+        RANDOM_ID=$(openssl rand -hex 8)
+        TIMESTAMP=$(date +%s)
+        TEMP_SCRIPT="/tmp/sshft_script_${TIMESTAMP}_${RANDOM_ID}.sh"
+
+        # Cleanup function for script execution
+        cleanup_script() {
+          ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "rm -f \"$TEMP_SCRIPT\"" 2>/dev/null || true
+        }
+        trap cleanup_script EXIT
+
+        # Determine which script to execute
+        if [ -n "${{ inputs.post_script }}" ]; then
+          echo "Executing inline post-transfer script..."
+          
+          # Validate that the script is not empty after trimming
+          TRIMMED_SCRIPT=$(echo "${{ inputs.post_script }}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+          if [ -z "$TRIMMED_SCRIPT" ]; then
+            echo "Error: Inline script is empty or contains only whitespace"
+            echo "error=Script is empty or malformed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Basic validation: check for common shell script issues
+          if ! echo "${{ inputs.post_script }}" | grep -qE '(^|[[:space:]])([a-zA-Z_][a-zA-Z0-9_]*=|if|then|else|fi|for|while|do|done|case|esac|function|echo|cd|ls|mkdir|rm|cp|mv)'; then
+            echo "Warning: Script appears malformed (no recognizable shell commands found)"
+            echo "error=Script appears malformed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Create temporary script file locally first
+          LOCAL_TEMP_SCRIPT=$(mktemp)
+          echo '#!/bin/bash' > "$LOCAL_TEMP_SCRIPT"
+          echo 'set -e' >> "$LOCAL_TEMP_SCRIPT"
+          echo "${{ inputs.post_script }}" >> "$LOCAL_TEMP_SCRIPT"
+          chmod +x "$LOCAL_TEMP_SCRIPT"
+          
+          # Upload script to remote server
+          if ! scp -F "$SSH_CONFIG_FILE" "$LOCAL_TEMP_SCRIPT" "${{ inputs.host }}:$TEMP_SCRIPT" 2>&1; then
+            echo "Error: Failed to upload script to remote server"
+            echo "error=Failed to upload script file" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
+          
+          # Make script executable on remote
+          if ! ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "chmod +x \"$TEMP_SCRIPT\"" 2>&1; then
+            echo "Error: Failed to make script executable on remote server"
+            echo "error=Failed to set script permissions" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
+          
+          rm -f "$LOCAL_TEMP_SCRIPT"
+          
+          # Execute the script and capture output
+          SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "\"$TEMP_SCRIPT\"" 2>&1) || SCRIPT_EXIT_CODE=$?
+          
+          if [ -n "$SCRIPT_EXIT_CODE" ] && [ "$SCRIPT_EXIT_CODE" -ne 0 ]; then
+            echo "Error: Script execution failed with exit code $SCRIPT_EXIT_CODE"
+            echo "error=Script execution failed" >> $GITHUB_OUTPUT
+            echo "$SCRIPT_OUTPUT"
+            exit 0
+          fi
+          
+          echo "executed=true" >> $GITHUB_OUTPUT
+          # Sanitize output for GitHub Actions (remove special characters that might break output)
+          SANITIZED_OUTPUT=$(echo "$SCRIPT_OUTPUT" | tr -d '\000-\010\013\014\016-\037' | head -c 10000)
+          echo "output<<SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
+          echo "$SANITIZED_OUTPUT" >> $GITHUB_OUTPUT
+          echo "SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
+          echo "Inline script executed successfully"
+          
+        elif [ -n "${{ inputs.post_script_path }}" ]; then
+          echo "Executing script from remote server path: ${{ inputs.post_script_path }}"
+          
+          # Check if the script file exists on remote server
+          if ! ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -f \"${{ inputs.post_script_path }}\"" 2>&1; then
+            echo "Error: Script file does not exist at path: ${{ inputs.post_script_path }}"
+            echo "error=Script file does not exist" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check if the script file is readable
+          if ! ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -r \"${{ inputs.post_script_path }}\"" 2>&1; then
+            echo "Error: Script file is not readable: ${{ inputs.post_script_path }}"
+            echo "error=Script file is not readable" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Validate script syntax (basic check for bash scripts)
+          SYNTAX_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "bash -n \"${{ inputs.post_script_path }}\"" 2>&1) || SYNTAX_ERROR=$?
+          
+          if [ -n "$SYNTAX_ERROR" ] && [ "$SYNTAX_ERROR" -ne 0 ]; then
+            echo "Error: Script has syntax errors"
+            echo "error=Script is malformed (syntax errors)" >> $GITHUB_OUTPUT
+            echo "$SYNTAX_CHECK"
+            exit 0
+          fi
+          
+          # Check if the script is executable, if not try to execute with bash
+          if ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -x \"${{ inputs.post_script_path }}\"" 2>&1; then
+            # Script is executable, run it directly
+            SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "\"${{ inputs.post_script_path }}\"" 2>&1) || SCRIPT_EXIT_CODE=$?
+          else
+            # Script is not executable, run with bash
+            echo "Note: Script is not executable, running with bash interpreter"
+            SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "bash \"${{ inputs.post_script_path }}\"" 2>&1) || SCRIPT_EXIT_CODE=$?
+          fi
+          
+          if [ -n "$SCRIPT_EXIT_CODE" ] && [ "$SCRIPT_EXIT_CODE" -ne 0 ]; then
+            echo "Error: Script execution failed with exit code $SCRIPT_EXIT_CODE"
+            echo "error=Script execution failed" >> $GITHUB_OUTPUT
+            echo "$SCRIPT_OUTPUT"
+            exit 0
+          fi
+          
+          echo "executed=true" >> $GITHUB_OUTPUT
+          # Sanitize output for GitHub Actions (remove special characters that might break output)
+          SANITIZED_OUTPUT=$(echo "$SCRIPT_OUTPUT" | tr -d '\000-\010\013\014\016-\037' | head -c 10000)
+          echo "output<<SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
+          echo "$SANITIZED_OUTPUT" >> $GITHUB_OUTPUT
+          echo "SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
+          echo "Script executed successfully from path: ${{ inputs.post_script_path }}"
+        fi
+
+        # Cleanup
+        cleanup_script
+        trap - EXIT
 
     - name: Cleanup SSH files securely
       shell: bash
