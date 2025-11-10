@@ -4,6 +4,7 @@ This document provides detailed examples of using the post-transfer script featu
 
 ## Table of Contents
 
+- [Backup Feature Examples](#backup-feature-examples)
 - [Basic Examples](#basic-examples)
 - [Web Application Deployment](#web-application-deployment)
 - [Database Operations](#database-operations)
@@ -11,6 +12,194 @@ This document provides detailed examples of using the post-transfer script featu
 - [System Maintenance](#system-maintenance)
 - [Error Handling](#error-handling)
 - [Best Practices](#best-practices)
+
+## Backup Feature Examples
+
+The action automatically backs up the destination before uploading files. This ensures you can rollback if something goes wrong.
+
+### Basic Backup Usage
+
+```yaml
+- name: Deploy with automatic backup
+  id: deploy
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USERNAME }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+    # backup_before_transfer: true (enabled by default)
+
+- name: Display backup information
+  if: steps.deploy.outputs.backup_created == 'true'
+  run: |
+    echo "✓ Backup created successfully"
+    echo "Location: ${{ steps.deploy.outputs.backup_path }}"
+    echo "Size: ${{ steps.deploy.outputs.backup_size }}"
+```
+
+### Disable Backup for Temporary Files
+
+```yaml
+- name: Upload temp files without backup
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USERNAME }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    source: "temp-data/"
+    destination: "/tmp/uploads/"
+    backup_before_transfer: false
+```
+
+### Deploy with Rollback Capability
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Deploy application
+        id: deploy
+        uses: kellydc/sshft@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "dist/"
+          destination: "/var/www/html/"
+          post_script: |
+            sudo systemctl restart nginx
+            
+            # Test if application is responding
+            sleep 5
+            if ! curl -f http://localhost:8080/health; then
+              echo "ERROR: Health check failed"
+              exit 1
+            fi
+            echo "Deployment successful"
+      
+      - name: Rollback on failure
+        if: failure() && steps.deploy.outputs.backup_created == 'true'
+        uses: kellydc/sshft@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "rollback-not-needed"  # Dummy source
+          destination: "/var/www/html/"
+          backup_before_transfer: false
+          post_script: |
+            BACKUP_PATH="${{ steps.deploy.outputs.backup_path }}"
+            DEST_DIR="/var/www/html"
+            
+            echo "Rolling back to backup: $BACKUP_PATH"
+            
+            # Remove failed deployment
+            rm -rf "$DEST_DIR"/*
+            
+            # Extract backup
+            tar -xzf "$BACKUP_PATH" -C "$(dirname "$DEST_DIR")"
+            
+            sudo systemctl restart nginx
+            echo "Rollback completed successfully"
+```
+
+### Save Backup Information for Later
+
+```yaml
+- name: Deploy and save backup info
+  id: deploy
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USERNAME }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    source: "app/"
+    destination: "/var/www/app/"
+
+- name: Save backup info to artifact
+  if: steps.deploy.outputs.backup_created == 'true'
+  run: |
+    mkdir -p backup-info
+    cat > backup-info/deployment.json << EOF
+    {
+      "backup_path": "${{ steps.deploy.outputs.backup_path }}",
+      "backup_size": "${{ steps.deploy.outputs.backup_size }}",
+      "deployment_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+      "commit_sha": "${{ github.sha }}"
+    }
+    EOF
+
+- name: Upload backup info
+  uses: actions/upload-artifact@v3
+  if: steps.deploy.outputs.backup_created == 'true'
+  with:
+    name: backup-info
+    path: backup-info/deployment.json
+```
+
+### Monitor Backup Storage
+
+```yaml
+- name: Deploy with backup monitoring
+  id: deploy
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USERNAME }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+    post_script: |
+      echo "=== Backup Storage Report ==="
+      BACKUP_DIR="$HOME/backups"
+      
+      # Total size of all backups
+      TOTAL_SIZE=$(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1)
+      echo "Total backup size: $TOTAL_SIZE"
+      
+      # Number of backups
+      BACKUP_COUNT=$(ls -1 "$BACKUP_DIR" | wc -l)
+      echo "Number of backups: $BACKUP_COUNT"
+      
+      # List recent backups
+      echo "Recent backups:"
+      ls -lht "$BACKUP_DIR" | head -n 6
+
+- name: Alert if backup storage is high
+  if: success()
+  run: |
+    echo "Deployment completed with backup"
+    echo "Backup: ${{ steps.deploy.outputs.backup_path }}"
+    echo "Size: ${{ steps.deploy.outputs.backup_size }}"
+```
+
+### First-Time Deployment (No Backup)
+
+```yaml
+- name: Initial deployment to new server
+  id: deploy
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.NEW_SERVER_HOST }}
+    username: ${{ secrets.SSH_USERNAME }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+    # Backup will be skipped automatically if destination doesn't exist
+
+- name: Check if it was first deployment
+  run: |
+    if [ "${{ steps.deploy.outputs.backup_created }}" != "true" ]; then
+      echo "This was a first-time deployment (no backup needed)"
+    else
+      echo "Updated existing deployment (backup created)"
+    fi
+```
 
 ## Basic Examples
 

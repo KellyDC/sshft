@@ -42,10 +42,23 @@ inputs:
   post_script_path:
     description: "Optional path to a script on the remote server to run after file transfer completes"
     required: false
+  backup_before_transfer:
+    description: "Create a backup of the destination before transferring files"
+    required: false
+    default: "true"
 outputs:
   success:
     description: "File transfer was successful"
     value: ${{ steps.transfer.outputs.success }}
+  backup_created:
+    description: "Whether a backup was created"
+    value: ${{ steps.backup.outputs.created }}
+  backup_path:
+    description: "Path to the backup file on the remote server"
+    value: ${{ steps.backup.outputs.path }}
+  backup_size:
+    description: "Size of the backup file"
+    value: ${{ steps.backup.outputs.size }}
   error:
     description: "An error occurred during file transfer"
     value: ${{ steps.transfer.outputs.error }}
@@ -125,9 +138,150 @@ runs:
           exit 1
         fi
 
+    - name: Backup destination before transfer
+      shell: bash
+      id: backup
+      if: inputs.backup_before_transfer == 'true' && inputs.direction == 'upload'
+      run: |
+        set -e
+        echo "created=false" >> $GITHUB_OUTPUT
+        echo "path=" >> $GITHUB_OUTPUT
+        echo "size=" >> $GITHUB_OUTPUT
+
+        echo "Starting backup process..."
+
+        # Generate timestamp and random ID for unique backup filename
+        BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        RANDOM_ID=$(openssl rand -hex 4)
+
+        # Get destination basename for backup filename
+        DEST_PATH="${{ inputs.destination }}"
+        if [[ "$DEST_PATH" == */ ]]; then
+          DEST_PATH="${DEST_PATH%/}"
+        fi
+        DEST_BASENAME=$(basename "$DEST_PATH")
+
+        # Create backup filename with timestamp
+        BACKUP_FILENAME="backup_${DEST_BASENAME}_${BACKUP_TIMESTAMP}_${RANDOM_ID}.tar.gz"
+        BACKUP_DIR="$HOME/backups"
+        BACKUP_PATH="$BACKUP_DIR/$BACKUP_FILENAME"
+
+        # Check if destination exists on remote server
+        DEST_EXISTS=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+          if [ -e \"$DEST_PATH\" ]; then
+            echo 'exists'
+          else
+            echo 'not_exists'
+          fi
+        " 2>&1) || {
+          echo "Error: Failed to check if destination exists"
+          exit 1
+        }
+
+        if [ "$DEST_EXISTS" = "not_exists" ]; then
+          echo "Destination does not exist yet, no backup needed"
+          echo "Note: This is the first transfer to this destination"
+          exit 0
+        fi
+
+        echo "Destination exists, creating backup..."
+
+        # Create backup directory on remote server if it doesn't exist
+        if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+          set -e
+          if [ ! -d \"$BACKUP_DIR\" ]; then
+            mkdir -p \"$BACKUP_DIR\" && echo 'Backup directory created at: $BACKUP_DIR'
+            chmod 700 \"$BACKUP_DIR\"
+          else
+            echo 'Using existing backup directory: $BACKUP_DIR'
+          fi
+          
+          # Verify backup directory is writable
+          if [ ! -w \"$BACKUP_DIR\" ]; then
+            echo 'Error: Backup directory is not writable'
+            exit 1
+          fi
+        " 2>&1; then
+          echo "Error: Failed to create or verify backup directory"
+          exit 1
+        fi
+
+        # Create backup using tar.gz with error handling
+        echo "Compressing destination to backup file..."
+        BACKUP_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+          set -e
+          
+          # Get parent directory and basename for tar
+          DEST_PARENT=\$(dirname \"$DEST_PATH\")
+          DEST_BASE=\$(basename \"$DEST_PATH\")
+          
+          # Create the backup with compression
+          if tar -czf \"$BACKUP_PATH\" -C \"\$DEST_PARENT\" \"\$DEST_BASE\" 2>&1; then
+            # Verify the backup was created successfully
+            if [ ! -f \"$BACKUP_PATH\" ]; then
+              echo 'Error: Backup file was not created'
+              exit 1
+            fi
+            
+            # Get backup file size
+            BACKUP_SIZE=\$(du -h \"$BACKUP_PATH\" | cut -f1)
+            echo \"Backup created successfully: $BACKUP_PATH\"
+            echo \"Backup size: \$BACKUP_SIZE\"
+            echo \"SIZE:\$BACKUP_SIZE\"
+          else
+            echo 'Error: Failed to create backup archive'
+            exit 1
+          fi
+        " 2>&1) || {
+          echo "Error during backup creation:"
+          echo "$BACKUP_OUTPUT"
+          exit 1
+        }
+
+        # Extract backup size from output
+        BACKUP_SIZE=$(echo "$BACKUP_OUTPUT" | grep "^SIZE:" | cut -d: -f2)
+
+        # Output backup information
+        echo "$BACKUP_OUTPUT"
+        echo ""
+        echo "=========================================="
+        echo "✓ Backup completed successfully"
+        echo "=========================================="
+        echo "Backup location: $BACKUP_PATH"
+        echo "Backup size: $BACKUP_SIZE"
+        echo "=========================================="
+        echo ""
+
+        # Set outputs
+        echo "created=true" >> $GITHUB_OUTPUT
+        echo "path=$BACKUP_PATH" >> $GITHUB_OUTPUT
+        echo "size=$BACKUP_SIZE" >> $GITHUB_OUTPUT
+
+        # Optional: Implement backup retention policy (keep last 10 backups)
+        echo "Checking backup retention policy..."
+        ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+          set -e
+          cd \"$BACKUP_DIR\"
+          
+          # Count backup files for this destination
+          BACKUP_COUNT=\$(ls -1 backup_${DEST_BASENAME}_*.tar.gz 2>/dev/null | wc -l)
+          
+          if [ \"\$BACKUP_COUNT\" -gt 10 ]; then
+            echo \"Found \$BACKUP_COUNT backups, removing oldest to keep last 10...\"
+            # Remove oldest backups, keep last 10
+            ls -1t backup_${DEST_BASENAME}_*.tar.gz | tail -n +11 | xargs -r rm -f
+            echo \"Old backups cleaned up\"
+          else
+            echo \"Backup count: \$BACKUP_COUNT (within retention limit)\"
+          fi
+        " 2>&1 || echo "Note: Backup retention cleanup encountered an issue (non-critical)"
+
+        echo "Backup process completed, proceeding with file transfer..."
+
     - name: Transfer files
       shell: bash
       id: transfer
+      if: success() || (failure() && steps.backup.conclusion == 'skipped')
       run: |
         set -e
         echo "Starting file transfer..."
@@ -410,19 +564,71 @@ runs:
             exit 0
           fi
           
-          # Basic validation: check for common shell script issues
-          if ! echo "${{ inputs.post_script }}" | grep -qE '(^|[[:space:]])([a-zA-Z_][a-zA-Z0-9_]*=|if|then|else|fi|for|while|do|done|case|esac|function|echo|cd|ls|mkdir|rm|cp|mv)'; then
-            echo "Warning: Script appears malformed (no recognizable shell commands found)"
-            echo "error=Script appears malformed" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Create temporary script file locally first
+          # Create temporary script file locally first for validation
           LOCAL_TEMP_SCRIPT=$(mktemp)
           echo '#!/bin/bash' > "$LOCAL_TEMP_SCRIPT"
           echo 'set -e' >> "$LOCAL_TEMP_SCRIPT"
           echo "${{ inputs.post_script }}" >> "$LOCAL_TEMP_SCRIPT"
           chmod +x "$LOCAL_TEMP_SCRIPT"
+          
+          # Perform comprehensive local syntax validation
+          echo "Validating script syntax..."
+          SYNTAX_CHECK=$(bash -n "$LOCAL_TEMP_SCRIPT" 2>&1) || SYNTAX_ERROR=$?
+          
+          if [ -n "$SYNTAX_ERROR" ] && [ "$SYNTAX_ERROR" -ne 0 ]; then
+            echo "Error: Script has syntax errors:"
+            echo "$SYNTAX_CHECK"
+            echo "error=Script syntax error: unexpected token or malformed command" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
+          
+          # Additional validation: check for potentially dangerous or malformed patterns
+          echo "Performing additional script validation..."
+          
+          # Check for unmatched quotes
+          if grep -qE "^[^#]*(['\"])([^\\1]*)$" "$LOCAL_TEMP_SCRIPT" 2>/dev/null; then
+            echo "Warning: Script may contain unmatched quotes"
+          fi
+          
+          # Check for common syntax issues that bash -n might miss
+          VALIDATION_ERRORS=""
+          
+          # Check for pipes without commands
+          if grep -qE '\|[[:space:]]*(\||;|$)' "$LOCAL_TEMP_SCRIPT" 2>/dev/null; then
+            VALIDATION_ERRORS="${VALIDATION_ERRORS}Pipeline without command detected\n"
+          fi
+          
+          # Check for unmatched braces/brackets
+          OPEN_BRACES=$(grep -o '{' "$LOCAL_TEMP_SCRIPT" 2>/dev/null | wc -l)
+          CLOSE_BRACES=$(grep -o '}' "$LOCAL_TEMP_SCRIPT" 2>/dev/null | wc -l)
+          if [ "$OPEN_BRACES" -ne "$CLOSE_BRACES" ]; then
+            VALIDATION_ERRORS="${VALIDATION_ERRORS}Unmatched braces detected (open: $OPEN_BRACES, close: $CLOSE_BRACES)\n"
+          fi
+          
+          # Check for unmatched parentheses in arithmetic or subshells
+          OPEN_PARENS=$(grep -o '(' "$LOCAL_TEMP_SCRIPT" 2>/dev/null | wc -l)
+          CLOSE_PARENS=$(grep -o ')' "$LOCAL_TEMP_SCRIPT" 2>/dev/null | wc -l)
+          if [ "$OPEN_PARENS" -ne "$CLOSE_PARENS" ]; then
+            VALIDATION_ERRORS="${VALIDATION_ERRORS}Unmatched parentheses detected (open: $OPEN_PARENS, close: $CLOSE_PARENS)\n"
+          fi
+          
+          # Check for unmatched square brackets
+          OPEN_BRACKETS=$(grep -o '\[' "$LOCAL_TEMP_SCRIPT" 2>/dev/null | wc -l)
+          CLOSE_BRACKETS=$(grep -o '\]' "$LOCAL_TEMP_SCRIPT" 2>/dev/null | wc -l)
+          if [ "$OPEN_BRACKETS" -ne "$CLOSE_BRACKETS" ]; then
+            VALIDATION_ERRORS="${VALIDATION_ERRORS}Unmatched brackets detected (open: $OPEN_BRACKETS, close: $CLOSE_BRACKETS)\n"
+          fi
+          
+          if [ -n "$VALIDATION_ERRORS" ]; then
+            echo "Error: Script validation failed:"
+            echo -e "$VALIDATION_ERRORS"
+            echo "error=Script validation failed: malformed syntax" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
+          
+          echo "✓ Script syntax validation passed"
           
           # Upload script to remote server
           if ! scp -F "$SSH_CONFIG_FILE" "$LOCAL_TEMP_SCRIPT" "${{ inputs.host }}:$TEMP_SCRIPT" 2>&1; then
@@ -440,14 +646,29 @@ runs:
             exit 0
           fi
           
+          # Validate script syntax on remote server as well (double-check)
+          echo "Validating script syntax on remote server..."
+          REMOTE_SYNTAX_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "bash -n \"$TEMP_SCRIPT\"" 2>&1) || REMOTE_SYNTAX_ERROR=$?
+          
+          if [ -n "$REMOTE_SYNTAX_ERROR" ] && [ "$REMOTE_SYNTAX_ERROR" -ne 0 ]; then
+            echo "Error: Script has syntax errors on remote server:"
+            echo "$REMOTE_SYNTAX_CHECK"
+            echo "error=Remote script syntax validation failed" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
+          
           rm -f "$LOCAL_TEMP_SCRIPT"
+          
+          echo "✓ Remote script syntax validation passed"
+          echo "Executing script on remote server..."
           
           # Execute the script and capture output
           SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "\"$TEMP_SCRIPT\"" 2>&1) || SCRIPT_EXIT_CODE=$?
           
           if [ -n "$SCRIPT_EXIT_CODE" ] && [ "$SCRIPT_EXIT_CODE" -ne 0 ]; then
             echo "Error: Script execution failed with exit code $SCRIPT_EXIT_CODE"
-            echo "error=Script execution failed" >> $GITHUB_OUTPUT
+            echo "error=Script execution failed with exit code $SCRIPT_EXIT_CODE" >> $GITHUB_OUTPUT
             echo "$SCRIPT_OUTPUT"
             exit 0
           fi
@@ -458,7 +679,7 @@ runs:
           echo "output<<SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
           echo "$SANITIZED_OUTPUT" >> $GITHUB_OUTPUT
           echo "SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
-          echo "Inline script executed successfully"
+          echo "✓ Inline script executed successfully"
           
         elif [ -n "${{ inputs.post_script_path }}" ]; then
           echo "Executing script from remote server path: ${{ inputs.post_script_path }}"
@@ -477,19 +698,79 @@ runs:
             exit 0
           fi
           
-          # Validate script syntax (basic check for bash scripts)
+          # Check if file is empty
+          FILE_SIZE=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "stat -c%s \"${{ inputs.post_script_path }}\" 2>/dev/null || stat -f%z \"${{ inputs.post_script_path }}\" 2>/dev/null || echo 0")
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "Error: Script file is empty"
+            echo "error=Script file is empty" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Comprehensive syntax validation
+          echo "Validating script syntax..."
           SYNTAX_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "bash -n \"${{ inputs.post_script_path }}\"" 2>&1) || SYNTAX_ERROR=$?
           
           if [ -n "$SYNTAX_ERROR" ] && [ "$SYNTAX_ERROR" -ne 0 ]; then
-            echo "Error: Script has syntax errors"
-            echo "error=Script is malformed (syntax errors)" >> $GITHUB_OUTPUT
+            echo "Error: Script has syntax errors:"
             echo "$SYNTAX_CHECK"
+            echo "error=Script syntax error: unexpected token or malformed command" >> $GITHUB_OUTPUT
             exit 0
           fi
+          
+          # Additional validation: check script content for common issues
+          echo "Performing additional script validation..."
+          VALIDATION_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
+            set -e
+            SCRIPT_PATH=\"${{ inputs.post_script_path }}\"
+            
+            # Check for unmatched braces
+            OPEN_BRACES=\$(grep -o '{' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
+            CLOSE_BRACES=\$(grep -o '}' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
+            if [ \"\$OPEN_BRACES\" -ne \"\$CLOSE_BRACES\" ]; then
+              echo \"ERROR:Unmatched braces (open: \$OPEN_BRACES, close: \$CLOSE_BRACES)\"
+              exit 1
+            fi
+            
+            # Check for unmatched parentheses
+            OPEN_PARENS=\$(grep -o '(' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
+            CLOSE_PARENS=\$(grep -o ')' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
+            if [ \"\$OPEN_PARENS\" -ne \"\$CLOSE_PARENS\" ]; then
+              echo \"ERROR:Unmatched parentheses (open: \$OPEN_PARENS, close: \$CLOSE_PARENS)\"
+              exit 1
+            fi
+            
+            # Check for unmatched brackets
+            OPEN_BRACKETS=\$(grep -o '\[' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
+            CLOSE_BRACKETS=\$(grep -o '\]' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
+            if [ \"\$OPEN_BRACKETS\" -ne \"\$CLOSE_BRACKETS\" ]; then
+              echo \"ERROR:Unmatched brackets (open: \$OPEN_BRACKETS, close: \$CLOSE_BRACKETS)\"
+              exit 1
+            fi
+            
+            # Check for pipes without commands
+            if grep -qE '\|[[:space:]]*(\||;|\$)' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo \"WARNING:Pipeline without command detected\"
+            fi
+            
+            echo \"OK:Validation passed\"
+          " 2>&1) || VALIDATION_ERROR=$?
+          
+          if [ -n "$VALIDATION_ERROR" ] && [ "$VALIDATION_ERROR" -ne 0 ]; then
+            echo "Error: Script validation failed:"
+            echo "$VALIDATION_OUTPUT" | grep "^ERROR:" | sed 's/^ERROR://'
+            echo "error=Script validation failed: malformed syntax" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Show warnings if any
+          echo "$VALIDATION_OUTPUT" | grep "^WARNING:" | sed 's/^WARNING:/Warning: /' || true
+          
+          echo "✓ Script syntax validation passed"
           
           # Check if the script is executable, if not try to execute with bash
           if ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -x \"${{ inputs.post_script_path }}\"" 2>&1; then
             # Script is executable, run it directly
+            echo "Executing script on remote server..."
             SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "\"${{ inputs.post_script_path }}\"" 2>&1) || SCRIPT_EXIT_CODE=$?
           else
             # Script is not executable, run with bash
@@ -499,7 +780,7 @@ runs:
           
           if [ -n "$SCRIPT_EXIT_CODE" ] && [ "$SCRIPT_EXIT_CODE" -ne 0 ]; then
             echo "Error: Script execution failed with exit code $SCRIPT_EXIT_CODE"
-            echo "error=Script execution failed" >> $GITHUB_OUTPUT
+            echo "error=Script execution failed with exit code $SCRIPT_EXIT_CODE" >> $GITHUB_OUTPUT
             echo "$SCRIPT_OUTPUT"
             exit 0
           fi
@@ -510,7 +791,7 @@ runs:
           echo "output<<SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
           echo "$SANITIZED_OUTPUT" >> $GITHUB_OUTPUT
           echo "SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
-          echo "Script executed successfully from path: ${{ inputs.post_script_path }}"
+          echo "✓ Script executed successfully from path: ${{ inputs.post_script_path }}"
         fi
 
         # Cleanup
