@@ -122,6 +122,7 @@ jobs:
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
         if: always()
         with:
           sarif_file: "trivy-results.sarif"
@@ -147,6 +148,13 @@ jobs:
 
           # Check for hardcoded passwords (exclude workflows)
           if grep -r -iE "password\s*=\s*['\"][^'\"]+['\"]" --include="*.yml" --include="*.yaml" --include="*.sh" --exclude-dir=.github .; then
+            echo "⚠️  Potential hardcoded password found"
+            SECRET_FOUND=true
+          fi
+
+          if [ "$SECRET_FOUND" = "true" ]; then
+            echo "❌ Potential secrets detected. Please review."
+            exit 1
           fi
 
           echo "✅ No obvious secrets detected"
