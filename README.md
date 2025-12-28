@@ -2,7 +2,15 @@
 
 > 📚 **[Documentation Index](DOCS_INDEX.md)** - Complete guide to all documentation
 
-This action allows you to transfer files or directories to and from a remote server via SSH. It uses compression (tar.gz) for efficient transfer and includes comprehensive error handling and security features.
+**Secure, bidirectional file transfer via SSH with automatic backups, compression, and comprehensive security validations.**
+
+Key capabilities:
+- ✅ Upload/download with automatic tar.gz compression
+- ✅ Auto-backup before upload (keeps last 10)
+- ✅ 10GB size limit, disk space validation
+- ✅ Dangerous command blocking in scripts
+- ✅ Resource limits and timeout protection
+- ✅ Six-phase modular workflow
 
 ## Inputs
 
@@ -267,35 +275,54 @@ jobs:
 
 ## Features
 
-- **Automatic Backups**: Backs up destination before uploading (enabled by default)
-- **Backup Retention**: Automatically keeps the last 10 backups per destination
-- **Compression**: Files are automatically compressed using tar.gz for efficient transfer
-- **Bidirectional**: Supports both upload and download operations
-- **Security**: SSH key validation, configurable host key checking, and secure cleanup
-- **Error Handling**: Comprehensive error checking at each step
-- **Connection Testing**: Verifies SSH connection before attempting file transfer
-- **Temporary File Management**: Automatic cleanup of temporary files on both local and remote systems
-- **Post-Transfer Scripts**: Optional script execution after successful file transfer with robust error handling
-- **Script Validation**: Comprehensive syntax and structural validation to prevent malformed scripts from executing
-- **Modular Architecture**: Six independent phases with clear separation of concerns
+### Core Functionality
+- **Bidirectional Transfer**: Upload and download via SSH/SCP
+- **Automatic Compression**: tar.gz for efficient transfer
+- **Smart Compression**: Skips re-compression of already compressed files
+- **Backup & Retention**: Auto-backup before upload, keeps last 10
+- **Modular Design**: Six independent phases with clear error handling
+
+### Security
+- **File Size Limits**: 10GB maximum (prevents resource exhaustion)
+- **Disk Space Validation**: Pre-transfer check with 20% buffer
+- **Path Normalization**: Prevents path traversal attacks
+- **Symlink Safety**: Validates symlink targets
+- **Dangerous Command Blocking**: Prevents rm -rf /, dd, shutdown, fork bombs, etc.
+- **Script Security**: No sudo/su, no remote code execution patterns
+- **Resource Limits**: CPU, memory, process, and timeout restrictions
+- **Secure Cleanup**: SSH keys overwritten with zeros
+
+### Reliability
+- **Pre-flight Connection Test**: Validates SSH before file operations  
+- **Comprehensive Validation**: Source, destination, permissions, space
+- **Error Handling**: Detailed error messages at each phase
+- **Automatic Cleanup**: Temporary files removed even on failure
+- **Script Validation**: Syntax and structure checks before execution
+
+### Post-Transfer Scripts
+- **Dual Modes**: Inline or remote script execution
+- **Validation**: Syntax, structure, and security checks
+- **Resource Control**: ulimit restrictions and timeouts
+- **Non-blocking**: Script errors don't fail the action
 
 ## Documentation
 
 📚 **Complete Documentation Set**:
 
-- **[README.md](README.md)** - Main documentation (you are here)
-- **[VISUAL_GUIDE.md](VISUAL_GUIDE.md)** - 📊 Visual diagrams and simplified workflows
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - 🏗️ Detailed technical architecture and design
-- **[EXAMPLES.md](EXAMPLES.md)** - 💡 Comprehensive usage examples and patterns
-- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - ⚡ Quick reference guide for common tasks
-- **[CHANGELOG_BACKUP_FEATURE.md](CHANGELOG_BACKUP_FEATURE.md)** - 📝 Backup feature changelog
+- **[FEATURES.md](FEATURES.md)** - ⚡ Feature summary and quick reference
+- **[README.md](README.md)** - 📖 Main documentation (you are here)
+- **[SECURITY.md](SECURITY.md)** - 🔒 Security protections and best practices
+- **[EXAMPLES.md](EXAMPLES.md)** - 💡 Usage examples and patterns
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - 📋 Quick lookup and troubleshooting
+- **[VISUAL_GUIDE.md](VISUAL_GUIDE.md)** - 📊 Visual diagrams and workflows
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - 🏗️ Technical architecture
+- **[IMPROVEMENTS.md](IMPROVEMENTS.md)** - 📝 Feature history and changes
 
-**Recommended Reading Order**:
-1. Start here (README.md) for overview and basic usage
-2. See [VISUAL_GUIDE.md](VISUAL_GUIDE.md) for easy-to-understand diagrams
-3. Check [EXAMPLES.md](EXAMPLES.md) for specific use cases
-4. Use [QUICK_REFERENCE.md](QUICK_REFERENCE.md) as a cheat sheet
-5. Read [ARCHITECTURE.md](ARCHITECTURE.md) for deep technical understanding
+**Recommended Reading**:
+1. **New users**: [FEATURES.md](FEATURES.md) → [README.md](README.md) → [EXAMPLES.md](EXAMPLES.md)
+2. **Security review**: [SECURITY.md](SECURITY.md) → [FEATURES.md](FEATURES.md)
+3. **Troubleshooting**: [QUICK_REFERENCE.md](QUICK_REFERENCE.md)
+4. **Complete guide**: See [DOCS_INDEX.md](DOCS_INDEX.md)
 
 ## Data Workflow
 
@@ -605,14 +632,39 @@ The post-transfer script feature includes comprehensive error handling and valid
 
 ## Security Notes
 
-- Always store your SSH private key as a GitHub secret.
-- SSH private keys are validated before use to ensure they are properly formatted.
-- By default, host key verification is enabled for security. Only disable `strict_host_key_checking` when necessary.
-- All SSH keys and configurations are created with unique filenames to avoid conflicts with existing SSH setups.
-- The action securely cleans up all temporary SSH files after execution, including overwriting key files with zeros.
-- SSH connections include timeout and keep-alive settings for reliability.
-- Supports SSH key passphrases for additional security.
-- **Post-script security**: Inline scripts are uploaded securely and temporary files are cleaned up automatically.
+### SSH Security
+- SSH private keys stored as GitHub secrets
+- Key format validation before use
+- Host key verification enabled by default
+- Unique temporary filenames prevent conflicts
+- Secure cleanup: keys overwritten with zeros before deletion
+- Connection timeouts and keep-alive settings
+- Passphrase support for encrypted keys
+
+### File Transfer Security
+- **Size limits**: 10GB maximum per transfer (prevents resource exhaustion)
+- **Disk space validation**: Checks available space with 20% buffer
+- **Path security**: Normalizes paths, validates destinations
+- **Symlink safety**: Detects and validates symlink targets
+- **Permission checks**: Verifies read/write access before operations
+
+### Script Execution Security
+- **Dangerous command blocking**: Prevents destructive operations (rm -rf /, dd, shutdown, etc.)
+- **Privilege escalation prevention**: Blocks sudo/su commands
+- **Remote code execution prevention**: Blocks curl/wget piped to bash
+- **Syntax validation**: Pre-execution bash syntax checking
+- **Resource limits**: CPU (5min), memory (2GB), processes (100), file size (1GB)
+- **Execution timeout**: 10-minute maximum per script
+- **Command injection prevention**: Detects nested substitutions
+- **Secure upload**: Scripts transferred via SCP, cleaned up after execution
+
+### Best Practices
+- Use `strict_host_key_checking: true` in production
+- Keep SSH keys in GitHub secrets, never commit them
+- Use `post_script_path` for complex scripts (easier to test)
+- Test scripts on target server before using in workflows
+- Monitor backup storage (`~/backups`) periodically
+- Review script validation errors carefully
 
 ## Outputs
 
