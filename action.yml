@@ -315,34 +315,36 @@ runs:
         BASE_NAME=$(basename "$SOURCE_PATH")
         TAR_FILE="sshft_${BASE_NAME}_${UNIQUE_SUFFIX}.tar.gz"
 
-        # Check if the source exists
-        if [ ! -e "$SOURCE_PATH" ]; then
-          echo "Error: Source file or directory does not exist: $SOURCE_PATH"
-          echo "error=Source file or directory not found" >> $GITHUB_OUTPUT
-          exit 1
-        fi
+        if [[ "${{ inputs.direction }}" == "upload" ]]; then
+          # UPLOAD: Local -> Remote
+          
+          # Check if the source exists locally
+          if [ ! -e "$SOURCE_PATH" ]; then
+            echo "Error: Source file or directory does not exist: $SOURCE_PATH"
+            echo "error=Source file or directory not found" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
-        # Calculate source size for validation and disk space check
-        echo "Calculating source size..."
-        if [ -d "$SOURCE_PATH" ]; then
-          SOURCE_SIZE_BYTES=$(du -sb "$SOURCE_PATH" 2>/dev/null | cut -f1 || echo 0)
-        else
-          SOURCE_SIZE_BYTES=$(stat -c%s "$SOURCE_PATH" 2>/dev/null || stat -f%z "$SOURCE_PATH" 2>/dev/null || echo 0)
-        fi
+          # Calculate source size for validation and disk space check
+          echo "Calculating source size..."
+          if [ -d "$SOURCE_PATH" ]; then
+            SOURCE_SIZE_BYTES=$(du -sb "$SOURCE_PATH" 2>/dev/null | cut -f1 || echo 0)
+          else
+            SOURCE_SIZE_BYTES=$(stat -c%s "$SOURCE_PATH" 2>/dev/null || stat -f%z "$SOURCE_PATH" 2>/dev/null || echo 0)
+          fi
 
-        SOURCE_SIZE_MB=$((SOURCE_SIZE_BYTES / 1024 / 1024))
-        echo "Source size: ${SOURCE_SIZE_MB}MB (${SOURCE_SIZE_BYTES} bytes)"
+          SOURCE_SIZE_MB=$((SOURCE_SIZE_BYTES / 1024 / 1024))
+          echo "Source size: ${SOURCE_SIZE_MB}MB (${SOURCE_SIZE_BYTES} bytes)"
 
-        # Security: Prevent resource exhaustion with reasonable file size limit (2GB by default)
-        MAX_SIZE_BYTES=$((2 * 1024 * 1024 * 1024))
-        if [ "$SOURCE_SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
-          echo "Error: Source size (${SOURCE_SIZE_MB}MB) exceeds maximum allowed size (2GB)"
-          echo "error=Source size exceeds limit" >> $GITHUB_OUTPUT
-          exit 1
-        fi
-
-        # Function to check if a file is already compressed
-        is_compressed() {
+          # Security: Prevent resource exhaustion with reasonable file size limit (2GB by default)
+          MAX_SIZE_BYTES=$((2 * 1024 * 1024 * 1024))
+          if [ "$SOURCE_SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
+            echo "Error: Source size (${SOURCE_SIZE_MB}MB) exceeds maximum allowed size (2GB)"
+            echo "error=Source size exceeds limit" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Check if we need compression
           local file="$1"
           local mime_type
           local extension
@@ -366,14 +368,40 @@ runs:
             esac
           fi
           
-          return 1
-        }
-
-        if [[ "${{ inputs.direction }}" == "upload" ]]; then
-          # UPLOAD: Local -> Remote
+          
           # Check if we need compression
           NEEDS_COMPRESSION=true
           TRANSFER_FILE=""
+
+          # Function to check if a file is already compressed
+          is_compressed() {
+            local file="$1"
+            local mime_type
+            local extension
+            
+            # Get file extension
+            extension="${file##*.}"
+            extension=$(echo "$extension" | tr '[:upper:]' '[:lower:]')
+            
+            # Check common compressed file extensions
+            case "$extension" in
+              gz|tgz|tar.gz|bz2|tbz2|tar.bz2|xz|txz|tar.xz|zip|rar|7z|tar|lz4|zst)
+                return 0
+                ;;
+            esac
+            
+            # Check MIME type if file command is available
+            if command -v file >/dev/null 2>&1; then
+              mime_type=$(file -b --mime-type "$file" 2>/dev/null || echo "")
+              case "$mime_type" in
+                application/gzip|application/x-gzip|application/x-bzip2|application/x-xz|application/zip|application/x-tar|application/x-compressed-tar)
+                  return 0
+                  ;;
+              esac
+            fi
+            
+            return 1
+          }
           
           if [ -f "$SOURCE_PATH" ] && is_compressed "$SOURCE_PATH"; then
             echo "Source file is already compressed, transferring directly..."
