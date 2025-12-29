@@ -375,31 +375,6 @@ runs:
           fi
           
           # Check if we need compression
-          local file="$1"
-          local mime_type
-          local extension
-          
-          # Get file extension
-          extension="${file##*.}"
-          extension=$(echo "$extension" | tr '[:upper:]' '[:lower:]')
-          
-          # Check common compressed file extensions
-          case "$extension" in
-            gz|tgz|tar.gz|bz2|tbz2|tar.bz2|xz|txz|tar.xz|zip|rar|7z|tar|lz4|zst)
-              return 0 ;;
-          esac
-          
-          # Check MIME type if file command is available
-          if command -v file >/dev/null 2>&1; then
-            mime_type=$(file -b --mime-type "$file" 2>/dev/null || echo "")
-            case "$mime_type" in
-              application/gzip|application/x-gzip|application/x-tar|application/zip|application/x-rar|application/x-7z-compressed|application/x-bzip2|application/x-xz)
-                return 0 ;;
-            esac
-          fi
-          
-          
-          # Check if we need compression
           NEEDS_COMPRESSION=true
           TRANSFER_FILE=""
           
