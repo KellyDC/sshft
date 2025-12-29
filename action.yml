@@ -671,11 +671,10 @@ runs:
               if ! mkdir -p "$LOCAL_DEST" 2>&1; then
                 echo "Error: Failed to create local destination directory: $LOCAL_DEST"
                 echo "error=Failed to create local destination directory" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-            
-            # Verify it was created and is writable (for directories only)
-            if [ "$IS_SOURCE_FILE" = "false" ]; then
+                exit 1
+              fi
+              
+              # Verify it was created and is writable (for directories only)
               if [ ! -d "$LOCAL_DEST" ] || [ ! -w "$LOCAL_DEST" ]; then
                 echo "Error: Failed to create writable destination directory"
                 echo "error=Destination directory creation failed" >> $GITHUB_OUTPUT
