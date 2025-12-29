@@ -614,19 +614,29 @@ runs:
           # Validate and create local destination directory
           LOCAL_DEST="${{ inputs.destination }}"
           if [[ "$LOCAL_DEST" == */ ]]; then
-            LOCAL_DEST="${LOCAL_DEST%/}"
+            LOCAL_DEST="${DEST_PATH%/}"
           fi
+          
+          # Determine if source is a file or directory
+          IS_SOURCE_FILE=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -f \"$REMOTE_SOURCE\" ] && echo 'true' || echo 'false'")
           
           # Check if destination exists and validate it
           if [ -e "$LOCAL_DEST" ]; then
-            # Exists - verify it's a directory and writable
-            if [ ! -d "$LOCAL_DEST" ]; then
+            # For single file downloads, destination should be overwritten if it exists
+            if [ "$IS_SOURCE_FILE" = "true" ] && [ -f "$LOCAL_DEST" ]; then
+              echo "Destination file exists and will be overwritten: $LOCAL_DEST"
+            elif [ "$IS_SOURCE_FILE" = "true" ] && [ -d "$LOCAL_DEST" ]; then
+              echo "Error: Destination is a directory but source is a file: $LOCAL_DEST"
+              echo "error=Destination type mismatch" >> $GITHUB_OUTPUT
+              exit 1
+            elif [ "$IS_SOURCE_FILE" = "false" ] && [ ! -d "$LOCAL_DEST" ]; then
               echo "Error: Local destination exists but is not a directory: $LOCAL_DEST"
               echo "error=Local destination is not a directory" >> $GITHUB_OUTPUT
               exit 1
             fi
             
-            if [ ! -w "$LOCAL_DEST" ]; then
+            # For directories, check if writable
+            if [ -d "$LOCAL_DEST" ] && [ ! -w "$LOCAL_DEST" ]; then
               echo "Error: Local destination directory is not writable: $LOCAL_DEST"
               echo "error=Local destination is not writable" >> $GITHUB_OUTPUT
               exit 1
@@ -643,25 +653,45 @@ runs:
               echo "Warning: Local destination is a symlink pointing to: $REAL_DEST"
             fi
           else
-            # Doesn't exist - create it with proper permissions
-            echo "Creating local destination directory: $LOCAL_DEST"
-            if ! mkdir -p "$LOCAL_DEST" 2>&1; then
-              echo "Error: Failed to create local destination directory: $LOCAL_DEST"
-              echo "error=Failed to create local destination directory" >> $GITHUB_OUTPUT
+            # Doesn't exist - create parent directory for files or the directory itself for dirs
+            if [ "$IS_SOURCE_FILE" = "true" ]; then
+              # For single file, create parent directory
+              PARENT_DIR=$(dirname "$LOCAL_DEST")
+              if [ ! -d "$PARENT_DIR" ]; then
+                echo "Creating parent directory: $PARENT_DIR"
+                if ! mkdir -p "$PARENT_DIR" 2>&1; then
+                  echo "Error: Failed to create parent directory: $PARENT_DIR"
+                  echo "error=Failed to create parent directory" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              fi
+            else
+              # For directory, create the destination directory
+              echo "Creating local destination directory: $LOCAL_DEST"
+              if ! mkdir -p "$LOCAL_DEST" 2>&1; then
+                echo "Error: Failed to create local destination directory: $LOCAL_DEST"
+                echo "error=Failed to create local destination directory" >> $GITHUB_OUTPUT
               exit 1
             fi
             
-            # Verify it was created and is writable
-            if [ ! -d "$LOCAL_DEST" ] || [ ! -w "$LOCAL_DEST" ]; then
-              echo "Error: Failed to create writable destination directory"
-              echo "error=Destination directory creation failed" >> $GITHUB_OUTPUT
-              exit 1
+            # Verify it was created and is writable (for directories only)
+            if [ "$IS_SOURCE_FILE" = "false" ]; then
+              if [ ! -d "$LOCAL_DEST" ] || [ ! -w "$LOCAL_DEST" ]; then
+                echo "Error: Failed to create writable destination directory"
+                echo "error=Destination directory creation failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
           fi
           
           # Check local disk space before download
           echo "Checking local disk space..."
-          AVAILABLE_BYTES=$(df -B1 "$LOCAL_DEST" | tail -1 | awk '{print $4}')
+          if [ "$IS_SOURCE_FILE" = "true" ]; then
+            CHECK_PATH=$(dirname "$LOCAL_DEST")
+          else
+            CHECK_PATH="$LOCAL_DEST"
+          fi
+          AVAILABLE_BYTES=$(df -B1 "$CHECK_PATH" | tail -1 | awk '{print $4}')
           # Add 20% buffer for extraction overhead
           REQUIRED_BYTES=$((REMOTE_SIZE_BYTES + REMOTE_SIZE_BYTES / 5))
           
@@ -681,18 +711,40 @@ runs:
               echo "error=Local extraction failed" >> $GITHUB_OUTPUT
               exit 1
             fi
+            
             # Copy extracted content to destination
-            if ! cp -r "$TEMP_DIR/$REMOTE_BASE"/* "$LOCAL_DEST/"; then
-              echo "Error: Failed to copy extracted files to destination"
-              echo "error=Local copy failed" >> $GITHUB_OUTPUT
-              exit 1
+            if [ "$IS_SOURCE_FILE" = "true" ]; then
+              # Single file - copy directly to destination file path
+              EXTRACTED_FILE="$TEMP_DIR/$REMOTE_BASE"
+              if ! cp "$EXTRACTED_FILE" "$LOCAL_DEST"; then
+                echo "Error: Failed to copy extracted file to destination"
+                echo "error=Local file copy failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+            else
+              # Directory - copy contents to destination directory
+              if ! cp -r "$TEMP_DIR/$REMOTE_BASE"/* "$LOCAL_DEST/"; then
+                echo "Error: Failed to copy extracted files to destination"
+                echo "error=Local copy failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
           else
             echo "Moving downloaded compressed file to destination..."
-            if ! cp "$LOCAL_DOWNLOAD_FILE" "$LOCAL_DEST/"; then
-              echo "Error: Failed to move downloaded file to destination"
-              echo "error=Local file move failed" >> $GITHUB_OUTPUT
-              exit 1
+            if [ "$IS_SOURCE_FILE" = "true" ]; then
+              # Single file - move to destination file path
+              if ! cp "$LOCAL_DOWNLOAD_FILE" "$LOCAL_DEST"; then
+                echo "Error: Failed to move downloaded file to destination"
+                echo "error=Local file move failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+            else
+              # Directory - move to destination directory
+              if ! cp "$LOCAL_DOWNLOAD_FILE" "$LOCAL_DEST/"; then
+                echo "Error: Failed to move downloaded file to destination"
+                echo "error=Local file move failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
           fi
         fi
