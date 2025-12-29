@@ -94,8 +94,8 @@ Backup Still Safe:
 ## ⬇️ Download Workflow (Simplified)
 
 ```
-Remote Server                         Your Computer
-═════════════                         ═════════════
+Remote Server                         GitHub Actions Runner (Ephemeral)
+═════════════                         ═════════════════════════════════
 
     [Files]
        │
@@ -110,10 +110,15 @@ Remote Server                         Your Computer
        │                       │       Extract
        │                       │           │
        │                       │           ▼
-       │                       │    [Files at Destination]
+       │                       │    [Files on Runner]
        │                       │
     Cleanup ◀──────────────────┴─────▶ Cleanup
 ```
+
+**⚠️ CRITICAL**: Downloads go to the GitHub Actions runner (ephemeral storage).
+- Runner is destroyed after workflow completes
+- Downloaded files are **LOST** unless saved as artifacts
+- **Always use `actions/upload-artifact` to persist downloads**
 
 Note: Backup is NOT created for downloads (only for uploads)
 

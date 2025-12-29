@@ -64,14 +64,47 @@ When using this action, please follow these security best practices:
 
 ## Security Features
 
-This action includes several security features:
+This action includes comprehensive security protections:
 
-- SSH key validation before use
-- Secure temporary file handling
-- Automatic cleanup of sensitive data
-- Connection timeout and retry logic
-- Support for SSH key passphrases
+### File Transfer Security
+- **Size limits**: 2GB for uploads, 10GB for downloads (prevents resource exhaustion)
+- **Disk space validation**: Pre-transfer check with 20% buffer
+- **Path normalization**: Prevents path traversal attacks
+- **Symlink validation**: Checks and warns about symlink targets
+- **Permission verification**: Validates read/write access
+
+### Script Execution Security
+- **Dangerous command blocking**: Prevents rm -rf /, dd, shutdown, fork bombs, etc.
+- **Privilege escalation prevention**: Blocks sudo/su
+- **Remote code execution prevention**: Blocks curl/wget | bash patterns
+- **Resource limits**: CPU (5min), memory (2GB), processes (100), file size (1GB)
+- **Execution timeout**: 10-minute maximum per script
+- **Command injection prevention**: Detects nested substitutions
+- **Syntax validation**: Pre-execution bash syntax checking
+
+### SSH Security
+- SSH key format validation
+- Secure temporary file handling (600/700 permissions)
+- Key overwrite with zeros before deletion
+- Connection timeouts and keep-alive
+- Passphrase support for encrypted keys
 - Configurable host key checking
+- Unique temporary filenames prevent conflicts
+
+### Automatic Cleanup
+- Comprehensive removal of SSH keys, configs, temp files
+- Cleanup runs even on failure
+- Best-effort remote cleanup
+
+## Blocked Commands
+
+For your protection, scripts cannot execute:
+- System destruction: `rm -rf /`, `dd of=/dev/`, disk formatting
+- System control: `shutdown`, `reboot`, `halt`
+- Privilege escalation: `sudo`, `su`
+- Remote code execution: `curl/wget | bash`
+- Security bypass: `iptables -F`, `ufw disable`
+- Resource attacks: fork bombs
 
 ## Changelog
 

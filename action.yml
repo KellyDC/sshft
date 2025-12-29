@@ -22,7 +22,7 @@ inputs:
     description: "Source file or directory to transfer"
     required: true
   destination:
-    description: "Destination path on the remote server"
+    description: "Destination path on the target server"
     required: true
   direction:
     description: "Transfer direction"
@@ -37,10 +37,10 @@ inputs:
     required: false
     default: "true"
   post_script:
-    description: "Optional inline script to run on the remote server after file transfer completes"
+    description: "Optional inline script to run on the target server after file transfer completes"
     required: false
   post_script_path:
-    description: "Optional path to a script on the remote server to run after file transfer completes"
+    description: "Optional path to a script on the target server to run after file transfer completes"
     required: false
   backup_before_transfer:
     description: "Create a backup of the destination before transferring files"
@@ -315,12 +315,6 @@ runs:
         BASE_NAME=$(basename "$SOURCE_PATH")
         TAR_FILE="sshft_${BASE_NAME}_${UNIQUE_SUFFIX}.tar.gz"
 
-        # Check if the source exists
-        if [ ! -e "$SOURCE_PATH" ]; then
-          echo "Error: Source file or directory does not exist: $SOURCE_PATH"
-          exit 1
-        fi
-
         # Function to check if a file is already compressed
         is_compressed() {
           local file="$1"
@@ -334,15 +328,17 @@ runs:
           # Check common compressed file extensions
           case "$extension" in
             gz|tgz|tar.gz|bz2|tbz2|tar.bz2|xz|txz|tar.xz|zip|rar|7z|tar|lz4|zst)
-              return 0 ;;
+              return 0
+              ;;
           esac
           
           # Check MIME type if file command is available
           if command -v file >/dev/null 2>&1; then
             mime_type=$(file -b --mime-type "$file" 2>/dev/null || echo "")
             case "$mime_type" in
-              application/gzip|application/x-gzip|application/x-tar|application/zip|application/x-rar|application/x-7z-compressed|application/x-bzip2|application/x-xz)
-                return 0 ;;
+              application/gzip|application/x-gzip|application/x-bzip2|application/x-xz|application/zip|application/x-tar|application/x-compressed-tar)
+                return 0
+                ;;
             esac
           fi
           
@@ -351,6 +347,33 @@ runs:
 
         if [[ "${{ inputs.direction }}" == "upload" ]]; then
           # UPLOAD: Local -> Remote
+          
+          # Check if the source exists locally
+          if [ ! -e "$SOURCE_PATH" ]; then
+            echo "Error: Source file or directory does not exist: $SOURCE_PATH"
+            echo "error=Source file or directory not found" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          # Calculate source size for validation and disk space check
+          echo "Calculating source size..."
+          if [ -d "$SOURCE_PATH" ]; then
+            SOURCE_SIZE_BYTES=$(du -sb "$SOURCE_PATH" 2>/dev/null | cut -f1 || echo 0)
+          else
+            SOURCE_SIZE_BYTES=$(stat -c%s "$SOURCE_PATH" 2>/dev/null || stat -f%z "$SOURCE_PATH" 2>/dev/null || echo 0)
+          fi
+
+          SOURCE_SIZE_MB=$((SOURCE_SIZE_BYTES / 1024 / 1024))
+          echo "Source size: ${SOURCE_SIZE_MB}MB (${SOURCE_SIZE_BYTES} bytes)"
+
+          # Security: Prevent resource exhaustion with reasonable file size limit (2GB by default)
+          MAX_SIZE_BYTES=$((2 * 1024 * 1024 * 1024))
+          if [ "$SOURCE_SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
+            echo "Error: Source size (${SOURCE_SIZE_MB}MB) exceeds maximum allowed size (2GB)"
+            echo "error=Source size exceeds limit" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
           # Check if we need compression
           NEEDS_COMPRESSION=true
           TRANSFER_FILE=""
@@ -399,10 +422,82 @@ runs:
             exit 1
           fi
           
-          # Verify destination directory exists and is writable
-          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -d \"${{ inputs.destination }}\" ] && [ -w \"${{ inputs.destination }}\" ]"; then
-            echo "Error: Destination directory does not exist or is not writable"
-            echo "error=Destination directory issue" >> $GITHUB_OUTPUT
+          # Normalize and validate destination path
+          DEST_PATH="${{ inputs.destination }}"
+          if [[ "$DEST_PATH" == */ ]]; then
+            DEST_PATH="${DEST_PATH%/}"
+          fi
+          
+          # Create destination directory if it doesn't exist and validate
+          DEST_CHECK=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+            set -e
+            
+            # Create destination directory if it doesn't exist
+            if [ ! -e \"$DEST_PATH\" ]; then
+              echo 'Destination does not exist, creating directory...'
+              mkdir -p \"$DEST_PATH\"
+              chmod 755 \"$DEST_PATH\"
+              echo 'Destination directory created'
+            fi
+            
+            # Check if it's a directory
+            if [ ! -d \"$DEST_PATH\" ]; then
+              echo 'ERROR:Destination is not a directory'
+              exit 1
+            fi
+            
+            # Check if writable
+            if [ ! -w \"$DEST_PATH\" ]; then
+              echo 'ERROR:Destination is not writable'
+              exit 1
+            fi
+            
+            # Security: Check if destination is a symlink pointing outside allowed paths
+            if [ -L \"$DEST_PATH\" ]; then
+              REAL_PATH=\$(realpath \"$DEST_PATH\" 2>/dev/null || readlink -f \"$DEST_PATH\" 2>/dev/null || echo '')
+              if [ -z \"\$REAL_PATH\" ]; then
+                echo 'ERROR:Cannot resolve symlink destination'
+                exit 1
+              fi
+              echo 'WARNING:Destination is a symlink'
+            fi
+            
+            echo 'OK:Destination validated'
+          " 2>&1) || DEST_ERROR=$?
+          
+          if [ -n "$DEST_ERROR" ] && [ "$DEST_ERROR" -ne 0 ]; then
+            ERROR_MSG=$(echo "$DEST_CHECK" | grep "^ERROR:" | sed 's/^ERROR://' | head -n 1)
+            echo "Error: ${ERROR_MSG:-Destination directory issue}"
+            echo "error=Destination validation failed: ${ERROR_MSG:-unknown}" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Show warnings if any
+          echo "$DEST_CHECK" | grep "^WARNING:" | sed 's/^WARNING:/Warning: /' || true
+          
+          # Check remote disk space before transfer
+          echo "Checking remote disk space..."
+          REMOTE_SPACE_CHECK=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+            set -e
+            # Get available space in bytes
+            AVAILABLE_BYTES=\$(df -B1 \"$DEST_PATH\" | tail -1 | awk '{print \$4}')
+            # Add 20% buffer for compression overhead
+            REQUIRED_BYTES=$((SOURCE_SIZE_BYTES + SOURCE_SIZE_BYTES / 5))
+            
+            if [ \"\$AVAILABLE_BYTES\" -lt \"\$REQUIRED_BYTES\" ]; then
+              AVAILABLE_MB=\$((\$AVAILABLE_BYTES / 1024 / 1024))
+              REQUIRED_MB=\$((\$REQUIRED_BYTES / 1024 / 1024))
+              echo \"ERROR:Insufficient disk space (available: \${AVAILABLE_MB}MB, required: \${REQUIRED_MB}MB)\"
+              exit 1
+            fi
+            
+            echo \"OK:Sufficient disk space\"
+          " 2>&1) || SPACE_ERROR=$?
+          
+          if [ -n "$SPACE_ERROR" ] && [ "$SPACE_ERROR" -ne 0 ]; then
+            ERROR_MSG=$(echo "$REMOTE_SPACE_CHECK" | grep "^ERROR:" | sed 's/^ERROR://' | head -n 1)
+            echo "Error: ${ERROR_MSG:-Insufficient remote disk space}"
+            echo "error=Disk space check failed: ${ERROR_MSG:-unknown}" >> $GITHUB_OUTPUT
             exit 1
           fi
           
@@ -410,14 +505,14 @@ runs:
           BASENAME_SOURCE=$(basename "$SOURCE_PATH")
           if [ "$NEEDS_COMPRESSION" = true ]; then
             echo "Extracting files on remote server..."
-            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cd \"$REMOTE_TEMP_DIR\" && tar -xzf \"$TAR_FILE\" && cp -r \"$BASENAME_SOURCE\"/* \"${{ inputs.destination }}/\""; then
+            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cd \"$REMOTE_TEMP_DIR\" && tar -xzf \"$TAR_FILE\" && cp -r \"$BASENAME_SOURCE\"/* \"$DEST_PATH/\""; then
               echo "Error: Failed to extract files on remote server"
               echo "error=Remote extraction failed" >> $GITHUB_OUTPUT
               exit 1
             fi
           else
             echo "Moving compressed file to destination..."
-            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cp \"$REMOTE_FILE\" \"${{ inputs.destination }}/\""; then
+            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cp \"$REMOTE_FILE\" \"$DEST_PATH/\""; then
               echo "Error: Failed to move file to destination"
               echo "error=Remote file move failed" >> $GITHUB_OUTPUT
               exit 1
@@ -426,10 +521,37 @@ runs:
           
         else
           # DOWNLOAD: Remote -> Local
+          # Normalize remote source path (remove trailing slash)
+          REMOTE_SOURCE="${{ inputs.source }}"
+          if [[ "$REMOTE_SOURCE" == */ ]]; then
+            REMOTE_SOURCE="${REMOTE_SOURCE%/}"
+          fi
+          
           # Verify remote source exists
-          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -e \"${{ inputs.source }}\" ]"; then
-            echo "Error: Remote source does not exist"
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -e \"$REMOTE_SOURCE\" ]"; then
+            echo "Error: Remote source does not exist: $REMOTE_SOURCE"
             echo "error=Remote source not found" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Calculate remote source size for validation
+          echo "Calculating remote source size..."
+          REMOTE_SIZE_BYTES=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+            if [ -d \"$REMOTE_SOURCE\" ]; then
+              du -sb \"$REMOTE_SOURCE\" 2>/dev/null | cut -f1 || echo 0
+            else
+              stat -c%s \"$REMOTE_SOURCE\" 2>/dev/null || stat -f%z \"$REMOTE_SOURCE\" 2>/dev/null || echo 0
+            fi
+          " 2>&1) || REMOTE_SIZE_BYTES=0
+          
+          REMOTE_SIZE_MB=$((REMOTE_SIZE_BYTES / 1024 / 1024))
+          echo "Remote source size: ${REMOTE_SIZE_MB}MB (${REMOTE_SIZE_BYTES} bytes)"
+          
+          # Security: Prevent resource exhaustion with reasonable file size limit (10GB)
+          MAX_SIZE_BYTES=$((10 * 1024 * 1024 * 1024))
+          if [ "$REMOTE_SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
+            echo "Error: Remote source size (${REMOTE_SIZE_MB}MB) exceeds maximum allowed size (10GB)"
+            echo "error=Remote source size exceeds limit" >> $GITHUB_OUTPUT
             exit 1
           fi
           
@@ -439,11 +561,6 @@ runs:
             echo "Error: Failed to create remote temporary directory"
             echo "error=Remote temp dir creation failed" >> $GITHUB_OUTPUT
             exit 1
-          fi
-          
-          REMOTE_SOURCE="${{ inputs.source }}"
-          if [[ "$REMOTE_SOURCE" == */ ]]; then
-            REMOTE_SOURCE="${REMOTE_SOURCE%/}"
           fi
           
           REMOTE_DIR=$(dirname "$REMOTE_SOURCE")
@@ -496,8 +613,96 @@ runs:
             exit 1
           fi
           
-          # Create destination directory if it doesn't exist
-          mkdir -p "${{ inputs.destination }}"
+          # Validate and create local destination directory
+          LOCAL_DEST="${{ inputs.destination }}"
+          if [[ "$LOCAL_DEST" == */ ]]; then
+            LOCAL_DEST="${DEST_PATH%/}"
+          fi
+          
+          # Determine if source is a file or directory
+          IS_SOURCE_FILE=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -f \"$REMOTE_SOURCE\" ] && echo 'true' || echo 'false'")
+          
+          # Check if destination exists and validate it
+          if [ -e "$LOCAL_DEST" ]; then
+            # For single file downloads, destination should be overwritten if it exists
+            if [ "$IS_SOURCE_FILE" = "true" ] && [ -f "$LOCAL_DEST" ]; then
+              echo "Destination file exists and will be overwritten: $LOCAL_DEST"
+            elif [ "$IS_SOURCE_FILE" = "true" ] && [ -d "$LOCAL_DEST" ]; then
+              echo "Error: Destination is a directory but source is a file: $LOCAL_DEST"
+              echo "error=Destination type mismatch" >> $GITHUB_OUTPUT
+              exit 1
+            elif [ "$IS_SOURCE_FILE" = "false" ] && [ ! -d "$LOCAL_DEST" ]; then
+              echo "Error: Local destination exists but is not a directory: $LOCAL_DEST"
+              echo "error=Local destination is not a directory" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # For directories, check if writable
+            if [ -d "$LOCAL_DEST" ] && [ ! -w "$LOCAL_DEST" ]; then
+              echo "Error: Local destination directory is not writable: $LOCAL_DEST"
+              echo "error=Local destination is not writable" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Security: Check if destination is a symlink
+            if [ -L "$LOCAL_DEST" ]; then
+              REAL_DEST=$(realpath "$LOCAL_DEST" 2>/dev/null || readlink -f "$LOCAL_DEST" 2>/dev/null || echo '')
+              if [ -z "$REAL_DEST" ]; then
+                echo "Error: Cannot resolve symlink destination: $LOCAL_DEST"
+                echo "error=Cannot resolve local destination symlink" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+              echo "Warning: Local destination is a symlink pointing to: $REAL_DEST"
+            fi
+          else
+            # Doesn't exist - create parent directory for files or the directory itself for dirs
+            if [ "$IS_SOURCE_FILE" = "true" ]; then
+              # For single file, create parent directory
+              PARENT_DIR=$(dirname "$LOCAL_DEST")
+              if [ ! -d "$PARENT_DIR" ]; then
+                echo "Creating parent directory: $PARENT_DIR"
+                if ! mkdir -p "$PARENT_DIR" 2>&1; then
+                  echo "Error: Failed to create parent directory: $PARENT_DIR"
+                  echo "error=Failed to create parent directory" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              fi
+            else
+              # For directory, create the destination directory
+              echo "Creating local destination directory: $LOCAL_DEST"
+              if ! mkdir -p "$LOCAL_DEST" 2>&1; then
+                echo "Error: Failed to create local destination directory: $LOCAL_DEST"
+                echo "error=Failed to create local destination directory" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+              
+              # Verify it was created and is writable (for directories only)
+              if [ ! -d "$LOCAL_DEST" ] || [ ! -w "$LOCAL_DEST" ]; then
+                echo "Error: Failed to create writable destination directory"
+                echo "error=Destination directory creation failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+            fi
+          fi
+          
+          # Check local disk space before download
+          echo "Checking local disk space..."
+          if [ "$IS_SOURCE_FILE" = "true" ]; then
+            CHECK_PATH=$(dirname "$LOCAL_DEST")
+          else
+            CHECK_PATH="$LOCAL_DEST"
+          fi
+          AVAILABLE_BYTES=$(df -B1 "$CHECK_PATH" | tail -1 | awk '{print $4}')
+          # Add 20% buffer for extraction overhead
+          REQUIRED_BYTES=$((REMOTE_SIZE_BYTES + REMOTE_SIZE_BYTES / 5))
+          
+          if [ "$AVAILABLE_BYTES" -lt "$REQUIRED_BYTES" ]; then
+            AVAILABLE_MB=$((AVAILABLE_BYTES / 1024 / 1024))
+            REQUIRED_MB=$((REQUIRED_BYTES / 1024 / 1024))
+            echo "Error: Insufficient local disk space (available: ${AVAILABLE_MB}MB, required: ${REQUIRED_MB}MB)"
+            echo "error=Insufficient local disk space" >> $GITHUB_OUTPUT
+            exit 1
+          fi
           
           # Extract/move files locally
           if [ "$NEEDS_COMPRESSION" = true ]; then
@@ -507,18 +712,40 @@ runs:
               echo "error=Local extraction failed" >> $GITHUB_OUTPUT
               exit 1
             fi
+            
             # Copy extracted content to destination
-            if ! cp -r "$TEMP_DIR/$REMOTE_BASE"/* "${{ inputs.destination }}/"; then
-              echo "Error: Failed to copy extracted files to destination"
-              echo "error=Local copy failed" >> $GITHUB_OUTPUT
-              exit 1
+            if [ "$IS_SOURCE_FILE" = "true" ]; then
+              # Single file - copy directly to destination file path
+              EXTRACTED_FILE="$TEMP_DIR/$REMOTE_BASE"
+              if ! cp "$EXTRACTED_FILE" "$LOCAL_DEST"; then
+                echo "Error: Failed to copy extracted file to destination"
+                echo "error=Local file copy failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+            else
+              # Directory - copy contents to destination directory
+              if ! cp -r "$TEMP_DIR/$REMOTE_BASE"/* "$LOCAL_DEST/"; then
+                echo "Error: Failed to copy extracted files to destination"
+                echo "error=Local copy failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
           else
             echo "Moving downloaded compressed file to destination..."
-            if ! cp "$LOCAL_DOWNLOAD_FILE" "${{ inputs.destination }}/"; then
-              echo "Error: Failed to move downloaded file to destination"
-              echo "error=Local file move failed" >> $GITHUB_OUTPUT
-              exit 1
+            if [ "$IS_SOURCE_FILE" = "true" ]; then
+              # Single file - move to destination file path
+              if ! cp "$LOCAL_DOWNLOAD_FILE" "$LOCAL_DEST"; then
+                echo "Error: Failed to move downloaded file to destination"
+                echo "error=Local file move failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+            else
+              # Directory - move to destination directory
+              if ! cp "$LOCAL_DOWNLOAD_FILE" "$LOCAL_DEST/"; then
+                echo "Error: Failed to move downloaded file to destination"
+                echo "error=Local file move failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
           fi
         fi
@@ -585,6 +812,79 @@ runs:
           
           # Additional validation: check for potentially dangerous or malformed patterns
           echo "Performing additional script validation..."
+          
+          # Security: Check for dangerous commands that could damage the system
+          echo "Checking for dangerous commands..."
+          DANGEROUS_PATTERNS=(
+            'rm[[:space:]]+-rf[[:space:]]*/'
+            'rm[[:space:]]+-rf[[:space:]]*~'
+            'dd[[:space:]]+if=/dev/(zero|random|urandom)[[:space:]]+of=/dev/'
+            ':(){.*:.*&.*};:'
+            'mkfs\.'
+            'fdisk'
+            'parted'
+            'mkswap'
+            'swapon'
+            'swapoff'
+            'reboot'
+            'shutdown'
+            'halt'
+            'poweroff'
+            'init[[:space:]]+[0-6]'
+            'systemctl[[:space:]]+(poweroff|reboot|halt)'
+            'kill[[:space:]]+-9[[:space:]]+1'
+            'kill[[:space:]]+-9[[:space:]]+\$\$'
+            'pkill[[:space:]]+-9'
+            'killall[[:space:]]+-9'
+            '>[[:space:]]*/dev/sd'
+            '>[[:space:]]*/dev/nvme'
+            'wipefs'
+            'shred[[:space:]]+-.*[[:space:]]*/dev/'
+            'chown[[:space:]]+-R[[:space:]]+.*[[:space:]]*:.*[[:space:]]*/'
+            'chmod[[:space:]]+-R[[:space:]]+777[[:space:]]*/'
+            'curl.*\|[[:space:]]*bash'
+            'wget.*\|[[:space:]]*bash'
+            'curl.*\|[[:space:]]*sh'
+            'wget.*\|[[:space:]]*sh'
+            'eval[[:space:]]+\$\('
+            '/etc/shadow'
+            '/etc/passwd'
+            'iptables[[:space:]]+-F'
+            'ufw[[:space:]]+disable'
+            'setenforce[[:space:]]+0'
+          )
+          
+          DANGEROUS_FOUND=""
+          for pattern in "${DANGEROUS_PATTERNS[@]}"; do
+            if grep -qE "$pattern" "$LOCAL_TEMP_SCRIPT" 2>/dev/null; then
+              COMMAND_SAMPLE=$(grep -E "$pattern" "$LOCAL_TEMP_SCRIPT" | head -n 1 | sed 's/^[[:space:]]*//')
+              DANGEROUS_FOUND="${DANGEROUS_FOUND}Potentially dangerous command detected: ${COMMAND_SAMPLE:0:60}...\n"
+            fi
+          done
+          
+          if [ -n "$DANGEROUS_FOUND" ]; then
+            echo "Error: Script contains potentially dangerous commands:"
+            echo -e "$DANGEROUS_FOUND"
+            echo "error=Script blocked: contains dangerous commands" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
+          
+          # Check for command injection attempts
+          if grep -qE '\$\(.*\$\{' "$LOCAL_TEMP_SCRIPT" 2>/dev/null; then
+            echo "Error: Script contains nested command substitution which may indicate injection attempt"
+            echo "error=Script blocked: suspicious command substitution" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
+          
+          # Check for privilege escalation attempts
+          if grep -qE '^[[:space:]]*(sudo|su[[:space:]])' "$LOCAL_TEMP_SCRIPT" 2>/dev/null; then
+            echo "Error: Script contains privilege escalation commands (sudo/su)"
+            echo "error=Script blocked: privilege escalation attempt" >> $GITHUB_OUTPUT
+            rm -f "$LOCAL_TEMP_SCRIPT"
+            exit 0
+          fi
           
           # Check for unmatched quotes
           if grep -qE "^[^#]*(['\"])([^\\1]*)$" "$LOCAL_TEMP_SCRIPT" 2>/dev/null; then
@@ -661,10 +961,20 @@ runs:
           rm -f "$LOCAL_TEMP_SCRIPT"
           
           echo "✓ Remote script syntax validation passed"
-          echo "Executing script on remote server..."
+          echo "Executing script on remote server in restricted mode..."
           
-          # Execute the script and capture output
-          SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "\"$TEMP_SCRIPT\"" 2>&1) || SCRIPT_EXIT_CODE=$?
+          # Execute the script in a restricted environment with timeout
+          # Set resource limits to prevent fork bombs and excessive resource usage
+          SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
+            # Set resource limits
+            ulimit -u 100      # Max 100 user processes
+            ulimit -f 1048576  # Max file size 1GB
+            ulimit -t 300      # Max CPU time 5 minutes
+            ulimit -v 2097152  # Max virtual memory 2GB
+            
+            # Execute with timeout (10 minutes max)
+            timeout 600 bash \"$TEMP_SCRIPT\"
+          " 2>&1) || SCRIPT_EXIT_CODE=$?
           
           if [ -n "$SCRIPT_EXIT_CODE" ] && [ "$SCRIPT_EXIT_CODE" -ne 0 ]; then
             echo "Error: Script execution failed with exit code $SCRIPT_EXIT_CODE"
@@ -719,6 +1029,59 @@ runs:
           
           # Additional validation: check script content for common issues
           echo "Performing additional script validation..."
+          
+          # Security: Check for dangerous commands on remote server
+          echo "Checking for dangerous commands..."
+          DANGEROUS_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
+            set -e
+            SCRIPT_PATH=\"${{ inputs.post_script_path }}\"
+            
+            # Check for extremely dangerous patterns
+            if grep -qE 'rm[[:space:]]+-rf[[:space:]]*/|rm[[:space:]]+-rf[[:space:]]*~|rm[[:space:]]+-rf[[:space:]]*/' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo 'ERROR:Dangerous rm command detected'
+              exit 1
+            fi
+            
+            if grep -qE 'dd[[:space:]]+if=/dev/(zero|random|urandom)[[:space:]]+of=/dev/' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo 'ERROR:Dangerous dd command detected'
+              exit 1
+            fi
+            
+            if grep -qE ':[(][)]\{.*:.*&.*\};:' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo 'ERROR:Fork bomb detected'
+              exit 1
+            fi
+            
+            if grep -qE 'mkfs\\.|fdisk|parted|wipefs' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo 'ERROR:Disk formatting command detected'
+              exit 1
+            fi
+            
+            if grep -qE 'shutdown|reboot|halt|poweroff' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo 'ERROR:System shutdown command detected'
+              exit 1
+            fi
+            
+            if grep -qE '^[[:space:]]*(sudo|su[[:space:]])' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo 'ERROR:Privilege escalation detected'
+              exit 1
+            fi
+            
+            if grep -qE 'curl.*\\|[[:space:]]*bash|wget.*\\|[[:space:]]*bash|curl.*\\|[[:space:]]*sh|wget.*\\|[[:space:]]*sh' \"\$SCRIPT_PATH\" 2>/dev/null; then
+              echo 'ERROR:Remote code execution pattern detected'
+              exit 1
+            fi
+            
+            echo 'OK:Security validation passed'
+          " 2>&1) || DANGEROUS_ERROR=$?
+          
+          if [ -n "$DANGEROUS_ERROR" ] && [ "$DANGEROUS_ERROR" -ne 0 ]; then
+            ERROR_MSG=$(echo "$DANGEROUS_CHECK" | grep "^ERROR:" | sed 's/^ERROR://' | head -n 1)
+            echo "Error: ${ERROR_MSG:-Script contains dangerous commands}"
+            echo "error=Script blocked: ${ERROR_MSG:-dangerous commands detected}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
           VALIDATION_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
             set -e
             SCRIPT_PATH=\"${{ inputs.post_script_path }}\"
@@ -769,13 +1132,31 @@ runs:
           
           # Check if the script is executable, if not try to execute with bash
           if ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -x \"${{ inputs.post_script_path }}\"" 2>&1; then
-            # Script is executable, run it directly
-            echo "Executing script on remote server..."
-            SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "\"${{ inputs.post_script_path }}\"" 2>&1) || SCRIPT_EXIT_CODE=$?
+            # Script is executable, run it directly with restrictions
+            echo "Executing script on remote server in restricted mode..."
+            SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
+              # Set resource limits
+              ulimit -u 100      # Max 100 user processes
+              ulimit -f 1048576  # Max file size 1GB
+              ulimit -t 300      # Max CPU time 5 minutes
+              ulimit -v 2097152  # Max virtual memory 2GB
+              
+              # Execute with timeout (10 minutes max)
+              timeout 600 \"${{ inputs.post_script_path }}\"
+            " 2>&1) || SCRIPT_EXIT_CODE=$?
           else
-            # Script is not executable, run with bash
-            echo "Note: Script is not executable, running with bash interpreter"
-            SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "bash \"${{ inputs.post_script_path }}\"" 2>&1) || SCRIPT_EXIT_CODE=$?
+            # Script is not executable, run with bash interpreter
+            echo "Note: Script is not executable, running with bash interpreter in restricted mode"
+            SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
+              # Set resource limits
+              ulimit -u 100      # Max 100 user processes
+              ulimit -f 1048576  # Max file size 1GB
+              ulimit -t 300      # Max CPU time 5 minutes
+              ulimit -v 2097152  # Max virtual memory 2GB
+              
+              # Execute with timeout (10 minutes max)
+              timeout 600 bash \"${{ inputs.post_script_path }}\"
+            " 2>&1) || SCRIPT_EXIT_CODE=$?
           fi
           
           if [ -n "$SCRIPT_EXIT_CODE" ] && [ "$SCRIPT_EXIT_CODE" -ne 0 ]; then

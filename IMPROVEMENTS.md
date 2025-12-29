@@ -130,6 +130,21 @@ trap cleanup EXIT
 
 ## Security Enhancements
 
+### File Transfer Security
+- **Size Limits**: 2GB for uploads, 10GB for downloads (prevents resource exhaustion)
+- **Disk Space Validation**: Checks available space with 20% buffer
+- **Path Normalization**: Removes trailing slashes, validates paths
+- **Symlink Safety**: Detects and validates symlinks
+- **Destination Validation**: Checks existence, type, and permissions
+
+### Script Execution Security
+- **Dangerous Command Detection**: Blocks destructive commands (rm -rf /, dd, shutdown, mkfs, etc.)
+- **Privilege Escalation Prevention**: Blocks sudo/su
+- **Remote Code Execution Prevention**: Blocks curl/wget piped to bash
+- **Resource Limits**: ulimit restrictions (100 processes, 1GB files, 5min CPU, 2GB memory)
+- **Execution Timeout**: 10-minute maximum per script
+- **Command Injection Prevention**: Detects nested substitutions
+
 ### Temporary Directory Security
 - Uses `/tmp` with unique identifiers to prevent directory traversal
 - Proper cleanup prevents information leakage

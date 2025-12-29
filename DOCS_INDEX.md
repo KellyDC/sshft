@@ -10,71 +10,137 @@ Complete documentation guide for the sshft GitHub Action.
 
 | You Are... | Start Here |
 |-----------|-----------|
-| 🆕 **New User** | [README.md](README.md) → [VISUAL_GUIDE.md](VISUAL_GUIDE.md) |
+| 🆕 **New User** | [FEATURES.md](FEATURES.md) → [README.md](README.md) |
 | 💼 **Regular User** | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) → [EXAMPLES.md](EXAMPLES.md) |
 | 🔧 **Developer** | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| 🔒 **Security Reviewer** | [SECURITY.md](SECURITY.md) |
 | 🐛 **Troubleshooting** | [QUICK_REFERENCE.md](QUICK_REFERENCE.md#-troubleshooting) |
 
 ### By Task
 
 | I Want To... | Go To |
 |-------------|-------|
+| See all features at a glance | [FEATURES.md](FEATURES.md) |
 | Get started quickly | [README.md - Example Usage](README.md#example-usage) |
-| Understand the workflow | [VISUAL_GUIDE.md](VISUAL_GUIDE.md) |
+| Understand security | [SECURITY.md](SECURITY.md) |
 | See code examples | [EXAMPLES.md](EXAMPLES.md) |
 | Learn about backups | [QUICK_REFERENCE.md - Backup Features](QUICK_REFERENCE.md#-backup-features) |
-| Validate scripts properly | [README.md - Post-Script Error Handling](README.md#post-script-error-handling) |
 | Understand architecture | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Fix errors | [QUICK_REFERENCE.md - Error Messages](QUICK_REFERENCE.md#️-error-messages-you-might-see) |
 | Implement rollback | [EXAMPLES.md - Backup Examples](EXAMPLES.md#backup-feature-examples) |
+| Understand blocked commands | [SECURITY.md - Blocked Commands](SECURITY.md#blocked-commands) |
 
 ---
 
 ## 📖 Document Overview
 
+### [FEATURES.md](FEATURES.md) ⭐ NEW
+**Feature Summary** • ~5 min read
+
+Concise overview of all features with quick examples:
+- ✅ Core features summary (bidirectional transfer, smart compression, auto-backup)
+- ✅ Complete security protections table
+- ✅ Full blocked commands list with examples
+- ✅ Input/output reference tables
+- ✅ Common error messages and solutions
+- ✅ Quick code examples for all scenarios
+- ✅ Download persistence warnings
+
+**Best for**: Quick overview, feature discovery, decision making, security review
+
+---
+
 ### [README.md](README.md)
 **Main Documentation** • ~15 min read
 
-The primary documentation file containing:
-- ✅ Feature overview
-- ✅ Input/output reference
-- ✅ Basic usage examples
-- ✅ Workflow diagrams (modular phases)
-- ✅ Security notes
-- ✅ Error handling guide
+The primary documentation file:
+- ✅ Detailed feature explanations
+- ✅ Usage examples
+- ✅ Workflow phases
+- ✅ Security documentation
+- ✅ Best practices
 
-**Best for**: Getting started, understanding features, basic configuration
+**Best for**: Getting started, understanding features, configuration
+
+---
+
+### [SECURITY.md](SECURITY.md) ⭐ UPDATED
+**Security Documentation** • ~10 min read
+
+Comprehensive security information:
+- ✅ All security protections explained
+- ✅ Blocked commands with rationale
+- ✅ Resource limits details
+- ✅ Security best practices
+- ✅ Vulnerability reporting
+
+**Best for**: Security review, compliance, understanding protections
+
+---
+
+### [QUICK_REFERENCE.md](QUICK_REFERENCE.md) ⭐ UPDATED
+**Quick Reference** • ~5 min read
+
+Quick lookup and cheat sheet:
+- ✅ Workflow overview
+- ✅ Input/output reference
+- ✅ Validation checklist
+- ✅ Error message lookup
+- ✅ Troubleshooting Q&A
+
+**Best for**: Quick lookups, troubleshooting
+
+---
+
+### [EXAMPLES.md](EXAMPLES.md) ⭐ UPDATED
+**Usage Examples** • ~20 min read
+
+Real-world examples:
+- ✅ Security notes and blocked commands
+- ✅ Backup feature examples
+- ✅ Deployment patterns
+- ✅ Post-script examples
+- ✅ Best practices
+
+**Best for**: Learning by example, copy-paste ready code
 
 ---
 
 ### [VISUAL_GUIDE.md](VISUAL_GUIDE.md)
 **Visual Workflows** • ~10 min read
 
-Easy-to-understand diagrams and visual representations:
-- ✅ Six-phase workflow overview
-- ✅ Upload/download simplified flows
-- ✅ Backup lifecycle visualization
-- ✅ Script validation process
+Diagrams and visual representations:
+- ✅ Six-phase workflow
+- ✅ Upload/download flows
 - ✅ Decision trees
-- ✅ State transitions
-- ✅ Color-coded component map
+- ✅ Error handling matrix
 
-**Best for**: Visual learners, understanding flow, quick overview
+**Best for**: Visual learners, understanding flow
 
 ---
 
 ### [ARCHITECTURE.md](ARCHITECTURE.md)
 **Technical Architecture** • ~30 min read
 
-Deep dive into the technical implementation:
+Deep technical dive:
 - ✅ Design philosophy
-- ✅ Detailed phase breakdown
+- ✅ Phase breakdown
 - ✅ Data flow diagrams
 - ✅ State management
 - ✅ Error propagation
-- ✅ Security model
-- ✅ Performance optimization
-- ✅ Testing strategy
+
+**Best for**: Developers, contributors, advanced troubleshooting
+
+---
+
+### [IMPROVEMENTS.md](IMPROVEMENTS.md) ⭐ UPDATED
+**Feature History** • ~10 min read
+
+Changelog and improvements:
+- ✅ Security enhancements
+- ✅ Feature additions
+- ✅ Performance optimizations
+- ✅ Technical changes
 
 **Best for**: Developers, contributors, advanced troubleshooting
 
@@ -131,28 +197,65 @@ Detailed changelog for backup and validation features:
 
 ## 🎓 Learning Paths
 
-### Path 1: Beginner (Total: ~30 min)
+### Path 1: Quick Start (Total: ~15 min)
 
 ```
-1. README.md - Example Usage section (5 min)
+1. FEATURES.md - Feature Summary (5 min)
    ↓
-2. VISUAL_GUIDE.md - Quick Reference section (5 min)
+2. README.md - Example Usage (5 min)
+   ↓
+3. QUICK_REFERENCE.md - Common Cases (5 min)
+   ↓
+✓ You can start using the action
+```
+
+### Path 2: Beginner (Total: ~30 min)
+
+```
+1. FEATURES.md - Overview (5 min)
+   ↓
+2. README.md - Complete read (10 min)
    ↓
 3. EXAMPLES.md - Basic Examples (10 min)
    ↓
-4. QUICK_REFERENCE.md - Common Use Cases (10 min)
+4. SECURITY.md - Security basics (5 min)
    ↓
-✓ You can now use the action confidently
+✓ You understand features and security
 ```
 
-### Path 2: Intermediate (Total: ~45 min)
+### Path 3: Intermediate (Total: ~45 min)
 
 ```
-1. README.md - Complete read (15 min)
+1. FEATURES.md - Overview (5 min)
    ↓
-2. VISUAL_GUIDE.md - Complete diagrams (10 min)
+2. README.md - Complete (10 min)
    ↓
-3. EXAMPLES.md - Advanced examples (15 min)
+3. SECURITY.md - Full security review (10 min)
+   ↓
+4. EXAMPLES.md - All examples (15 min)
+   ↓
+5. QUICK_REFERENCE.md - Troubleshooting (5 min)
+   ↓
+✓ You can handle complex scenarios
+```
+
+### Path 4: Advanced (Total: ~75 min)
+
+```
+1. FEATURES.md - Overview (5 min)
+   ↓
+2. README.md - Complete (10 min)
+   ↓
+3. SECURITY.md - Security deep-dive (10 min)
+   ↓
+4. ARCHITECTURE.md - Technical details (30 min)
+   ↓
+5. IMPROVEMENTS.md - Feature history (10 min)
+   ↓
+6. EXAMPLES.md - Best practices (10 min)
+   ↓
+✓ You understand internals and can contribute
+```
    ↓
 4. QUICK_REFERENCE.md - Error handling (5 min)
    ↓

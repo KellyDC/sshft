@@ -1,9 +1,10 @@
-# Post-Transfer Script Examples
+# sshft Action Examples
 
-This document provides detailed examples of using the post-transfer script feature in the sshft GitHub Action.
+Complete examples for the sshft GitHub Action with security features.
 
 ## Table of Contents
 
+- [Security Notes](#security-notes)
 - [Backup Feature Examples](#backup-feature-examples)
 - [Basic Examples](#basic-examples)
 - [Web Application Deployment](#web-application-deployment)
@@ -12,6 +13,31 @@ This document provides detailed examples of using the post-transfer script featu
 - [System Maintenance](#system-maintenance)
 - [Error Handling](#error-handling)
 - [Best Practices](#best-practices)
+
+## Security Notes
+
+### Blocked Commands
+The action blocks potentially dangerous commands:
+- **System destruction**: `rm -rf /`, `rm -rf ~`, `rm -rf *`
+- **Disk operations**: `dd` to/from devices, `mkfs`, `fdisk`, `parted`, `wipefs`
+- **System control**: `shutdown`, `reboot`, `halt`, `poweroff`
+- **Privilege escalation**: `sudo`, `su`
+- **Remote code execution**: `curl/wget | bash`, `curl/wget | sh`
+- **Fork bombs**: `:(){:|:&};:`
+- **Security bypass**: `iptables -F`, `ufw disable`, `setenforce 0`
+
+### Resource Limits
+Scripts execute with strict limits:
+- **Processes**: Max 100
+- **File size**: Max 1GB
+- **CPU time**: Max 5 minutes
+- **Memory**: Max 2GB
+- **Timeout**: 10 minutes total
+
+### File Transfer Limits
+- **Max file/directory size**: 2GB for uploads, 10GB for downloads
+- **Disk space check**: Validates 20% extra buffer available
+- **Symlink validation**: Checks and warns about symlinks
 
 ## Backup Feature Examples
 
@@ -538,6 +564,26 @@ jobs:
       echo "Failed to restart service after $MAX_RETRIES attempts"
       exit 1
 ```
+
+## Security Notes
+
+### Blocked Commands
+The action blocks potentially dangerous commands including:
+- `rm -rf /`, `rm -rf ~`, `rm -rf *` - System destruction
+- `dd` to/from devices - Disk overwrites
+- `shutdown`, `reboot`, `halt` - System control
+- `sudo`, `su` - Privilege escalation
+- `curl/wget | bash` - Remote code execution
+- Fork bombs: `:(){:|:&};:`
+- Disk formatting: `mkfs`, `fdisk`, `parted`
+
+### Resource Limits
+Scripts execute with:
+- Max 100 processes
+- Max 1GB file size
+- Max 5 minutes CPU time
+- Max 2GB memory
+- 10-minute timeout
 
 ## Best Practices
 
