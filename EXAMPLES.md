@@ -35,7 +35,7 @@ Scripts execute with strict limits:
 - **Timeout**: 10 minutes total
 
 ### File Transfer Limits
-- **Max file/directory size**: 10GB
+- **Max file/directory size**: 2GB for uploads, 10GB for downloads
 - **Disk space check**: Validates 20% extra buffer available
 - **Symlink validation**: Checks and warns about symlinks
 

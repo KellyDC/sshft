@@ -37,15 +37,16 @@ Complete documentation guide for the sshft GitHub Action.
 ### [FEATURES.md](FEATURES.md) ⭐ NEW
 **Feature Summary** • ~5 min read
 
-Concise overview of all features:
-- ✅ All features at a glance
-- ✅ Security protections summary
-- ✅ Input/output quick reference
-- ✅ Common use cases with code
-- ✅ Blocked commands list
-- ✅ Error messages table
+Concise overview of all features with quick examples:
+- ✅ Core features summary (bidirectional transfer, smart compression, auto-backup)
+- ✅ Complete security protections table
+- ✅ Full blocked commands list with examples
+- ✅ Input/output reference tables
+- ✅ Common error messages and solutions
+- ✅ Quick code examples for all scenarios
+- ✅ Download persistence warnings
 
-**Best for**: Quick overview, feature discovery, decision making
+**Best for**: Quick overview, feature discovery, decision making, security review
 
 ---
 

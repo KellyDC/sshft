@@ -55,6 +55,12 @@
   with:
     # ... same as above
     direction: "download"
+
+# ⚠️ IMPORTANT: Downloads go to runner (ephemeral). Save as artifacts to persist!
+- uses: actions/upload-artifact@v4
+  with:
+    name: downloaded-files
+    path: ./destination/
 ```
 
 ### Disable Backup
@@ -91,14 +97,14 @@
 
 | Error | Meaning | Fix |
 |-------|---------|-----|
-| `Source size exceeds limit` | File > 10GB | Split into smaller transfers |
+| `Source size exceeds limit` | Upload > 2GB or Download > 10GB | Split into smaller transfers |
 | `Insufficient disk space` | Not enough space | Free up space on destination |
 | `Script blocked: dangerous commands` | Contains rm -rf /, sudo, etc. | Remove dangerous commands |
 | `Destination is not a directory` | Path is a file | Use a directory path |
 
 ## 🔒 Security Limits
 
-- **Max file size**: 10GB
+- **Max file size**: 2GB for uploads, 10GB for downloads
 - **Blocked commands**: rm -rf /, dd, sudo, shutdown, curl\|bash
 - **Resource limits**: 100 processes, 2GB memory, 10min timeout
 - **Backups**: Last 10 kept (auto-cleanup)

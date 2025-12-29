@@ -131,7 +131,7 @@ trap cleanup EXIT
 ## Security Enhancements
 
 ### File Transfer Security
-- **Size Limits**: 2GB maximum to prevent resource exhaustion
+- **Size Limits**: 2GB for uploads, 10GB for downloads (prevents resource exhaustion)
 - **Disk Space Validation**: Checks available space with 20% buffer
 - **Path Normalization**: Removes trailing slashes, validates paths
 - **Symlink Safety**: Detects and validates symlinks

@@ -19,19 +19,19 @@ The action is designed with:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     GitHub Action Runtime                    │
+│                     GitHub Action Runtime                   │
 ├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │   Phase 1   │→ │   Phase 2   │→ │   Phase 3   │         │
-│  │  SSH Setup  │  │ Connection  │  │   Backup    │         │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
-│         ↓                ↓                 ↓                  │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │   Phase 4   │→ │   Phase 5   │→ │   Phase 6   │         │
-│  │  Transfer   │  │ Post-Script │  │   Cleanup   │         │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
-│                                                               │
+│                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+│  │   Phase 1   │→ │   Phase 2   │→ │   Phase 3   │          │
+│  │  SSH Setup  │  │ Connection  │  │   Backup    │          │
+│  └─────────────┘  └─────────────┘  └─────────────┘          │
+│         ↓                ↓                 ↓                │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+│  │   Phase 4   │→ │   Phase 5   │→ │   Phase 6   │          │
+│  │  Transfer   │  │ Post-Script │  │   Cleanup   │          │
+│  └─────────────┘  └─────────────┘  └─────────────┘          │
+│                                                             │
 └─────────────────────────────────────────────────────────────┘
                            ↓
                   ┌──────────────────┐
@@ -179,9 +179,9 @@ Input: Remote source path, local destination
   ↓
 [Compress on Remote] → tar -czf
   ↓
-[Download to Local] → scp
+[Download to Local] → scp (to GitHub Actions runner)
   ↓
-[Create Local Destination]
+[Create Local Destination] → On runner (ephemeral storage)
   ↓
 [Extract Locally] → tar -xzf
   ↓
@@ -189,6 +189,8 @@ Input: Remote source path, local destination
   ↓
 Output: success=true
 ```
+
+**⚠️ Important**: Downloads are stored on the GitHub Actions runner's ephemeral storage. The runner and all its files are destroyed when the workflow completes. To persist downloaded files, use `actions/upload-artifact` to save them as workflow artifacts.
 
 **Key Features**:
 - ✅ Bidirectional transfer (upload/download)

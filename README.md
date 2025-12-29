@@ -7,7 +7,7 @@
 Key capabilities:
 - ✅ Upload/download with automatic tar.gz compression
 - ✅ Auto-backup before upload (keeps last 10)
-- ✅ 10GB size limit, disk space validation
+- ✅ 2GB upload / 10GB download limits, disk space validation
 - ✅ Dangerous command blocking in scripts
 - ✅ Resource limits and timeout protection
 - ✅ Six-phase modular workflow
@@ -110,6 +110,8 @@ jobs:
 
 ### Downloading Files from Server
 
+> **⚠️ Important**: Downloaded files are stored on the GitHub Actions runner (ephemeral storage). The runner is destroyed after the workflow completes. To persist downloaded files beyond the workflow run, use `actions/upload-artifact` to save them as artifacts.
+
 ```yaml
 jobs:
   backup:
@@ -124,6 +126,14 @@ jobs:
           source: "/var/log/application.log"
           destination: "./logs/"
           direction: "download"
+      
+      # REQUIRED: Save downloaded files to persist beyond workflow
+      - name: Save logs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-logs
+          path: ./logs/
+          retention-days: 7
           
       - name: Download database backup
         uses: kellydc/sshft@v1
@@ -135,7 +145,29 @@ jobs:
           destination: "./backups/"
           direction: "download"
           recursive: true
+      
+      # REQUIRED: Save downloaded backups to persist
+      - name: Save backups as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-backups
+          path: ./backups/
+          retention-days: 30
 ```
+
+### Upload vs Download Comparison
+
+| Feature | Upload | Download |
+|---------|--------|----------|
+| **Direction** | Local → Remote Server | Remote Server → Local Runner |
+| **Backup Created** | ✅ Yes (if enabled, default) | ❌ No |
+| **Destination Auto-Created** | ✅ Yes (remote directory) | ✅ Yes (local directory on runner) |
+| **File Persistence** | ✅ Persistent on remote server | ⚠️ **Ephemeral** (use artifacts to persist) |
+| **Size Limit** | 2GB maximum | 10GB maximum |
+| **Typical Use Case** | Deploy code to server | Backup/retrieve logs or data |
+| **Post-Script** | Runs on remote server | Runs on remote server |
+
+**Key Takeaway**: Downloads go to the GitHub Actions runner's temporary storage. Always use `actions/upload-artifact` if you need to keep downloaded files after the workflow completes.
 
 ### Advanced Options
 
@@ -279,11 +311,12 @@ jobs:
 - **Bidirectional Transfer**: Upload and download via SSH/SCP
 - **Automatic Compression**: tar.gz for efficient transfer
 - **Smart Compression**: Skips re-compression of already compressed files
+- **Auto-Create Destinations**: Creates destination directories if they don't exist
 - **Backup & Retention**: Auto-backup before upload, keeps last 10
 - **Modular Design**: Six independent phases with clear error handling
 
 ### Security
-- **File Size Limits**: 10GB maximum (prevents resource exhaustion)
+- **File Size Limits**: 2GB for uploads, 10GB for downloads (prevents resource exhaustion)
 - **Disk Space Validation**: Pre-transfer check with 20% buffer
 - **Path Normalization**: Prevents path traversal attacks
 - **Symlink Safety**: Validates symlink targets
@@ -304,6 +337,247 @@ jobs:
 - **Validation**: Syntax, structure, and security checks
 - **Resource Control**: ulimit restrictions and timeouts
 - **Non-blocking**: Script errors don't fail the action
+
+## Testing
+
+The action supports various test scenarios to validate functionality:
+
+### Test Scenarios
+
+#### 1. Basic Upload
+Tests standard file upload with default settings (backup enabled).
+
+```yaml
+jobs:
+  test-basic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Create test files
+        run: |
+          mkdir -p test-data
+          echo "Test file" > test-data/test.txt
+      
+      - name: Upload test files
+        uses: your-org/sshft@main
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "test-data/"
+          destination: "/tmp/test-upload/"
+```
+
+**What it validates**:
+- SSH connection establishment
+- Source file compression
+- Destination directory creation (if doesn't exist)
+- File transfer and extraction
+- Default backup creation
+
+#### 2. Upload with Explicit Backup
+Tests backup functionality with explicit backup configuration.
+
+```yaml
+- name: Upload with backup
+  uses: your-org/sshft@main
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "test-data/"
+    destination: "/tmp/test-with-backup/"
+    backup_before_transfer: true
+```
+
+**What it validates**:
+- Backup creation before transfer
+- Backup file naming with timestamp
+- Backup compression (tar.gz)
+- Backup retention policy (keeps last 10)
+- First-time deployment (no backup needed)
+
+#### 3. Upload without Backup
+Tests upload with backup disabled.
+
+```yaml
+- name: Upload without backup
+  uses: your-org/sshft@main
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "test-data/"
+    destination: "/tmp/test-no-backup/"
+    backup_before_transfer: false
+```
+
+**What it validates**:
+- Transfer without backup step
+- Faster deployment for non-critical files
+- Backup step properly skipped
+
+#### 4. Upload with Post-Script
+Tests post-transfer script execution.
+
+```yaml
+- name: Upload with post-script
+  uses: your-org/sshft@main
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "test-data/"
+    destination: "/tmp/test-with-script/"
+    post_script: |
+      echo "Post-transfer script executed"
+      ls -la /tmp/test-with-script/
+      echo "File count: $(find /tmp/test-with-script/ -type f | wc -l)"
+```
+
+**What it validates**:
+- Inline script upload and execution
+- Script syntax validation
+- Script output capture
+- Security validations (dangerous commands blocked)
+- Resource limits enforcement
+
+#### 5. Download Test
+Tests file download from remote server.
+
+```yaml
+jobs:
+  test-download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Upload test files first
+      - name: Upload test files
+        uses: your-org/sshft@main
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "test-data/"
+          destination: "/tmp/test-download/"
+          backup_before_transfer: false
+      
+      # Download them back
+      - name: Download files
+        uses: your-org/sshft@main
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "/tmp/test-download/"
+          destination: "./downloaded-files/"
+          direction: "download"
+      
+      # Save downloaded files as artifacts to persist
+      - name: Save downloaded files
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-downloaded-files
+          path: ./downloaded-files/
+      
+      - name: Verify downloaded files
+        run: |
+          ls -la ./downloaded-files/
+          echo "File count: $(find ./downloaded-files/ -type f | wc -l)"
+```
+
+**What it validates**:
+- Bidirectional transfer capability
+- Remote file compression
+- Local file extraction
+- File integrity after round-trip
+- Artifact persistence for downloads
+
+#### 6. Edge Cases
+
+**Non-existent source (should fail)**:
+```yaml
+- name: Test non-existent source
+  continue-on-error: true
+  uses: your-org/sshft@main
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "/tmp/does-not-exist/"
+    destination: "./should-fail/"
+    direction: "download"
+```
+
+**Large file handling**:
+```yaml
+- name: Create large file
+  run: dd if=/dev/zero of=large-file.bin bs=1M count=100
+
+- name: Upload large file
+  uses: your-org/sshft@main
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "large-file.bin"
+    destination: "/tmp/large-file-test/"
+```
+
+### Test Best Practices
+
+1. **Clean Up Remote Files**: Remove test files after each run
+   ```yaml
+   - name: Cleanup
+     if: always()
+     run: |
+       ssh -i key user@host "rm -rf /tmp/test-*"
+   ```
+
+2. **Use Unique Paths**: Include run ID or timestamp in paths
+   ```yaml
+   destination: "/tmp/test-${{ github.run_id }}/"
+   ```
+
+3. **Verify Outputs**: Check action outputs after each test
+   ```yaml
+   - name: Verify success
+     run: |
+       if [ "${{ steps.upload.outputs.success }}" != "true" ]; then
+         echo "Upload failed!"
+         exit 1
+       fi
+   ```
+
+4. **Test Error Conditions**: Use `continue-on-error: true` for negative tests
+   ```yaml
+   - name: Test failure scenario
+     continue-on-error: true
+     id: should_fail
+     uses: your-org/sshft@main
+     # ... invalid configuration ...
+   
+   - name: Verify it failed
+     run: |
+       if [ "${{ steps.should_fail.outcome }}" != "failure" ]; then
+         echo "Should have failed but didn't!"
+         exit 1
+       fi
+   ```
+
+### Expected Test Results
+
+| Scenario | Backup Created | Script Executed | Expected Outcome |
+|----------|---------------|-----------------|------------------|
+| Basic Upload (first time) | No (destination doesn't exist) | No | ✅ Success |
+| Basic Upload (subsequent) | Yes | No | ✅ Success |
+| With Backup Enabled | Yes (if destination exists) | No | ✅ Success |
+| Without Backup | No | No | ✅ Success |
+| With Post-Script | Varies | Yes | ✅ Success |
+| Download | N/A (download only) | Varies | ✅ Success |
+| Non-existent Source | N/A | No | ❌ Failure (expected) |
 
 ## Documentation
 
@@ -447,7 +721,10 @@ flowchart TD
 ```
 
 **What happens**:
+- Validates source file/directory exists
+- Creates destination directory if it doesn't exist (upload only)
 - Compresses files using tar.gz for efficiency
+- Validates disk space on remote server
 - Transfers compressed archive
 - Extracts at destination
 - Cleans up temporary files on both ends
@@ -525,7 +802,7 @@ flowchart LR
 | **SSH Setup** | • Key validation<br>• Unique file names<br>• Passphrase support |
 | **Connection** | • Pre-flight check<br>• Early failure detection |
 | **Backup** | • Automatic creation<br>• Timestamped archives<br>• Retention policy (10 backups)<br>• Upload only |
-| **Transfer** | • tar.gz compression<br>• Bidirectional support<br>• Integrity checks |
+| **Transfer** | • Auto-create destination<br>• tar.gz compression<br>• Bidirectional support<br>• Disk space validation<br>• Integrity checks |
 | **Post-Script** | • Syntax validation<br>• Structural checks<br>• Graceful error handling |
 | **Cleanup** | • Secure key deletion<br>• Temp file removal<br>• Always executes |
 
@@ -642,9 +919,10 @@ The post-transfer script feature includes comprehensive error handling and valid
 - Passphrase support for encrypted keys
 
 ### File Transfer Security
-- **Size limits**: 10GB maximum per transfer (prevents resource exhaustion)
+- **Size limits**: 2GB for uploads, 10GB for downloads (prevents resource exhaustion)
 - **Disk space validation**: Checks available space with 20% buffer
 - **Path security**: Normalizes paths, validates destinations
+- **Auto-create destinations**: Creates missing directories with secure permissions (755)
 - **Symlink safety**: Detects and validates symlink targets
 - **Permission checks**: Verifies read/write access before operations
 

@@ -67,7 +67,7 @@ When using this action, please follow these security best practices:
 This action includes comprehensive security protections:
 
 ### File Transfer Security
-- **Size limits**: 10GB maximum (prevents resource exhaustion)
+- **Size limits**: 2GB for uploads, 10GB for downloads (prevents resource exhaustion)
 - **Disk space validation**: Pre-transfer check with 20% buffer
 - **Path normalization**: Prevents path traversal attacks
 - **Symlink validation**: Checks and warns about symlink targets
