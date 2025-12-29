@@ -428,14 +428,16 @@ runs:
             DEST_PATH="${DEST_PATH%/}"
           fi
           
-          # Verify destination directory exists and is writable
+          # Create destination directory if it doesn't exist and validate
           DEST_CHECK=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
             set -e
             
-            # Check if destination exists
+            # Create destination directory if it doesn't exist
             if [ ! -e \"$DEST_PATH\" ]; then
-              echo 'ERROR:Destination does not exist'
-              exit 1
+              echo 'Destination does not exist, creating directory...'
+              mkdir -p \"$DEST_PATH\"
+              chmod 755 \"$DEST_PATH\"
+              echo 'Destination directory created'
             fi
             
             # Check if it's a directory
