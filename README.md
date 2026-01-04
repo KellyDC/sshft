@@ -16,19 +16,24 @@ Key capabilities:
 
 | Name                     | Description                                 | Required | Default  |
 |--------------------------|---------------------------------------------|----------|----------|
-| `host`                   | SSH host to connect to                      | Yes      | -        |
+| `host`                   | SSH host (source for download, destination for upload) | Yes | - |
 | `port`                   | SSH port                                    | No       | 22       |
 | `username`               | SSH username                                | Yes      | -        |
 | `key`                    | SSH private key                             | Yes      | -        |
-| `passphrase`             | Passphrase for the SSH private key          | No       | -        |
-| `source`                 | Source file or directory to transfer        | Yes      | -        |
-| `destination`            | Destination path on the remote server       | Yes      | -        |
+| `passphrase`             | Passphrase for SSH private key              | No       | -        |
+| `source`                 | Source file/directory to transfer           | Yes      | -        |
+| `destination`            | Destination path                            | Yes      | -        |
 | `direction`              | Transfer direction (`upload` or `download`) | No       | `upload` |
+| `destination_host`       | Destination host for remote-to-remote downloads | No   | -        |
+| `destination_port`       | Destination SSH port                        | No       | 22       |
+| `destination_username`   | Destination SSH username                    | No       | -        |
+| `destination_key`        | Destination SSH private key                 | No       | -        |
+| `destination_passphrase` | Destination key passphrase                  | No       | -        |
 | `recursive`              | Transfer files recursively                  | No       | `true`   |
 | `strict_host_key_checking` | Enable strict host key checking           | No       | `true`   |
 | `post_script`            | Inline script to run on remote after transfer | No     | -        |
 | `post_script_path`       | Path to script on remote to run after transfer | No   | -        |
-| `backup_before_transfer` | Create backup of destination before transfer | No    | `true`   |
+| `backup_before_transfer` | Create backup before upload                 | No       | `true`   |
 
 ## Example Usage
 
@@ -110,64 +115,68 @@ jobs:
 
 ### Downloading Files from Server
 
-> **⚠️ Important**: Downloaded files are stored on the GitHub Actions runner (ephemeral storage). The runner is destroyed after the workflow completes. To persist downloaded files beyond the workflow run, use `actions/upload-artifact` to save them as artifacts.
+**Two download modes available:**
+
+#### Remote-to-Runner Download
+Files download to GitHub runner (ephemeral - use `actions/upload-artifact` to persist).
 
 ```yaml
 jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      - name: Download logs from server
+      - name: Download logs to runner
         uses: kellydc/sshft@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "/var/log/application.log"
+          host: ${{ secrets.SOURCE_HOST }}
+          username: ${{ secrets.SOURCE_USERNAME }}
+          key: ${{ secrets.SOURCE_KEY }}
+          source: "/var/log/app.log"
           destination: "./logs/"
           direction: "download"
       
-      # REQUIRED: Save downloaded files to persist beyond workflow
-      - name: Save logs as artifacts
+      # REQUIRED: Persist downloaded files
+      - name: Save as artifact
         uses: actions/upload-artifact@v4
         with:
           name: server-logs
           path: ./logs/
-          retention-days: 7
-          
-      - name: Download database backup
-        uses: kellydc/sshft@v1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "/var/backups/db/"
-          destination: "./backups/"
-          direction: "download"
-          recursive: true
-      
-      # REQUIRED: Save downloaded backups to persist
-      - name: Save backups as artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: database-backups
-          path: ./backups/
-          retention-days: 30
 ```
 
-### Upload vs Download Comparison
+#### Remote-to-Remote Download
+Transfer files directly between servers (persistent storage).
 
-| Feature | Upload | Download |
-|---------|--------|----------|
-| **Direction** | Local → Remote Server | Remote Server → Local Runner |
-| **Backup Created** | ✅ Yes (if enabled, default) | ❌ No |
-| **Destination Auto-Created** | ✅ Yes (remote directory) | ✅ Yes (local directory on runner) |
-| **File Persistence** | ✅ Persistent on remote server | ⚠️ **Ephemeral** (use artifacts to persist) |
-| **Size Limit** | 2GB maximum | 10GB maximum |
-| **Typical Use Case** | Deploy code to server | Backup/retrieve logs or data |
-| **Post-Script** | Runs on remote server | Runs on remote server |
+```yaml
+jobs:
+  server-migration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Transfer between servers
+        uses: kellydc/sshft@v1
+        with:
+          # Source server
+          host: ${{ secrets.SOURCE_HOST }}
+          username: ${{ secrets.SOURCE_USERNAME }}
+          key: ${{ secrets.SOURCE_KEY }}
+          source: "/var/www/html/"
+          # Destination server
+          destination_host: ${{ secrets.DEST_HOST }}
+          destination_username: ${{ secrets.DEST_USERNAME }}
+          destination_key: ${{ secrets.DEST_KEY }}
+          destination: "/backup/www/"
+          direction: "download"
+```
 
-**Key Takeaway**: Downloads go to the GitHub Actions runner's temporary storage. Always use `actions/upload-artifact` if you need to keep downloaded files after the workflow completes.
+### Transfer Modes Comparison
+
+| Feature | Upload | Download (Remote→Runner) | Download (Remote→Remote) |
+|---------|--------|------------------------|-------------------------|
+| **Direction** | Runner → Remote | Remote → Runner | Remote → Remote |
+| **Backup Created** | ✅ Yes (if enabled) | ❌ No | ❌ No |
+| **Persistence** | ✅ Persistent | ⚠️ Ephemeral (needs artifact) | ✅ Persistent |
+| **Size Limit** | 2GB | 10GB | 10GB |
+| **Use Case** | Deploy code | Retrieve logs/data | Server migration/backup |
+| **Requires destination_host** | ❌ No | ❌ No | ✅ Yes |
 
 ### Advanced Options
 
@@ -308,10 +317,10 @@ jobs:
 ## Features
 
 ### Core Functionality
-- **Bidirectional Transfer**: Upload and download via SSH/SCP
+- **Three Transfer Modes**: Runner→Remote upload, Remote→Runner download, Remote→Remote download
 - **Automatic Compression**: tar.gz for efficient transfer
 - **Smart Compression**: Skips re-compression of already compressed files
-- **Auto-Create Destinations**: Creates destination directories if they don't exist
+- **Auto-Create Destinations**: Creates destination directories automatically
 - **Backup & Retention**: Auto-backup before upload, keeps last 10
 - **Modular Design**: Six independent phases with clear error handling
 
