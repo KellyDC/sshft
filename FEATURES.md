@@ -9,14 +9,15 @@ Fast feature overview for the sshft GitHub Action - secure SSH file transfer wit
 ## ⚡ Core Features
 
 ### Bidirectional Transfer
-- ✅ **Upload**: Local → Remote server (with automatic backup)
-- ✅ **Download**: Remote → Local runner (⚠️ ephemeral storage - [see note](#-download-persistence))
+- ✅ **Upload**: Runner → Remote (with automatic backup)
+- ✅ **Download**: Remote → Runner (ephemeral storage)
+- ✅ **Download**: Remote → Remote (server-to-server)
 
 ### Smart File Handling
 - ✅ **Auto-compression**: tar.gz for efficient transfer
-- ✅ **Smart detection**: Skips re-compression of already compressed files
-- ✅ **Auto-create destinations**: Creates missing directories automatically
-- ✅ **Recursive transfers**: Handles entire directory trees
+- ✅ **Smart detection**: Skips re-compression of compressed files
+- ✅ **Auto-create paths**: Creates missing directories
+- ✅ **Recursive transfers**: Handles directory trees
 
 ### Automatic Backup System
 - ✅ **Before every upload**: Creates compressed backup (unless disabled)
@@ -138,13 +139,18 @@ setenforce 0      # Disable SELinux
 | Input | Default | Description |
 |-------|---------|-------------|
 | `port` | `22` | SSH port |
-| `direction` | `upload` | Transfer direction (`upload` or `download`) |
+| `direction` | `upload` | `upload` or `download` |
 | `recursive` | `true` | Transfer recursively |
-| `strict_host_key_checking` | `true` | Enable host key verification |
-| `backup_before_transfer` | `true` | Create backup before upload |
+| `strict_host_key_checking` | `true` | Verify host keys |
+| `backup_before_transfer` | `true` | Backup before upload |
 | `post_script` | - | Inline script to execute |
-| `post_script_path` | - | Path to script on remote server |
+| `post_script_path` | - | Remote script path |
 | `passphrase` | - | SSH key passphrase |
+| `destination_host` | - | For remote-to-remote downloads |
+| `destination_port` | `22` | Destination SSH port |
+| `destination_username` | - | Destination username |
+| `destination_key` | - | Destination SSH key |
+| `destination_passphrase` | - | Destination key passphrase |
 
 ### Outputs
 | Output | Description |
@@ -173,22 +179,37 @@ setenforce 0      # Disable SELinux
     destination: "/var/www/html/"
 ```
 
-### Download with Persistence
+### Download to Runner
 ```yaml
 - uses: kellydc/sshft@v1
   with:
     host: ${{ secrets.SSH_HOST }}
     username: ${{ secrets.SSH_USER }}
     key: ${{ secrets.SSH_KEY }}
-    source: "/var/log/app/"
+    source: "/var/log/app.log"
     destination: "./logs/"
     direction: "download"
 
-# ⚠️ IMPORTANT: Save downloads to persist beyond workflow
+# Save to persist beyond workflow
 - uses: actions/upload-artifact@v4
   with:
-    name: server-logs
+    name: logs
     path: ./logs/
+```
+
+### Download Remote-to-Remote
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SOURCE_HOST }}
+    username: ${{ secrets.SOURCE_USER }}
+    key: ${{ secrets.SOURCE_KEY }}
+    source: "/data/files/"
+    destination: "/backups/"
+    direction: "download"
+    destination_host: ${{ secrets.DEST_HOST }}
+    destination_username: ${{ secrets.DEST_USER }}
+    destination_key: ${{ secrets.DEST_KEY }}
 ```
 
 ### With Post-Script
@@ -225,34 +246,18 @@ setenforce 0      # Disable SELinux
 
 ## ⚠️ Important Behaviors
 
-### Download Persistence
+### Download Modes
 
-**Downloads go to the GitHub Actions runner** (ephemeral storage that is destroyed after the workflow completes).
+**Remote → Runner** (no `destination_host`): Files download to GitHub runner's ephemeral storage.
+- ⚠️ **Runner storage is destroyed** after workflow completes
+- **Must use `actions/upload-artifact`** to persist files
 
-**To keep downloaded files**, you MUST use `actions/upload-artifact`:
+**Remote → Remote** (with `destination_host`): Files transfer directly between servers.
+- ✅ Files persist on destination server
+- No artifact upload needed
 
-```yaml
-- name: Download files
-  uses: kellydc/sshft@v1
-  with:
-    direction: "download"
-    # ... other config
-
-- name: Save downloads (REQUIRED to persist)
-  uses: actions/upload-artifact@v4
-  with:
-    name: my-files
-    path: ./destination/
-```
-
-### Auto-Creation of Destinations
-
-The action **automatically creates destination directories** if they don't exist:
-
-```yaml
-# This works even if /var/www/newapp/ doesn't exist yet
-destination: "/var/www/newapp/"  # ✅ Will be created automatically
-```
+### Auto-Creation
+Destination directories are **created automatically** if they don't exist.
 
 ### Backup Behavior
 

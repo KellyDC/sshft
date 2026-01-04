@@ -1,20 +1,297 @@
 # sshft Action Examples
 
-Complete examples for the sshft GitHub Action with security features.
+Complete examples for the sshft GitHub Action.
 
 ## Table of Contents
 
-- [Security Notes](#security-notes)
-- [Backup Feature Examples](#backup-feature-examples)
-- [Basic Examples](#basic-examples)
+- [Security & Limits](#security--limits)
+- [Basic Upload/Download](#basic-uploaddownload)
+- [Backup & Rollback](#backup--rollback)
+- [Remote-to-Remote Transfer](#remote-to-remote-transfer)
+- [Post-Transfer Scripts](#post-transfer-scripts)
 - [Web Application Deployment](#web-application-deployment)
-- [Database Operations](#database-operations)
-- [Docker Container Management](#docker-container-management)
-- [System Maintenance](#system-maintenance)
-- [Error Handling](#error-handling)
 - [Best Practices](#best-practices)
 
-## Security Notes
+---
+
+## Security & Limits
+
+### Blocked Commands
+Scripts cannot execute: `rm -rf /`, `dd` to devices, `shutdown`, `reboot`, `sudo`, `su`, `curl|bash`, fork bombs, `mkfs`, `fdisk`, `iptables -F`, etc.
+
+### Resource Limits
+- **File size**: 2GB upload, 10GB download
+- **Script**: 100 processes, 2GB memory, 5min CPU, 10min timeout
+- **Disk check**: Validates 20% buffer available
+
+---
+
+## Basic Upload/Download
+
+### Simple Upload
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+```
+
+### Download to Runner
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "/var/log/app.log"
+    destination: "./logs/"
+    direction: "download"
+
+# Persist downloaded files
+- uses: actions/upload-artifact@v4
+  with:
+    name: app-logs
+    path: ./logs/
+```
+
+---
+
+## Backup & Rollback
+
+### Deploy with Auto-Backup
+```yaml
+- id: deploy
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+    # backup_before_transfer: true (default)
+
+- name: Show backup info
+  if: steps.deploy.outputs.backup_created == 'true'
+  run: |
+    echo "Backup: ${{ steps.deploy.outputs.backup_path }}"
+    echo "Size: ${{ steps.deploy.outputs.backup_size }}"
+```
+
+### Deploy with Rollback
+```yaml
+- id: deploy
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+
+- name: Test deployment
+  id: test
+  run: curl -f https://example.com/health
+
+- name: Rollback on failure
+  if: failure() && steps.deploy.outputs.backup_created == 'true'
+  run: |
+    ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+      "tar -xzf ${{ steps.deploy.outputs.backup_path }} -C /var/www/"
+```
+
+---
+
+## Remote-to-Remote Transfer
+
+### Server-to-Server Copy
+```yaml
+- name: Copy from prod to staging
+  uses: kellydc/sshft@v1
+  with:
+    # Source server
+    host: ${{ secrets.PROD_HOST }}
+    username: ${{ secrets.PROD_USER }}
+    key: ${{ secrets.PROD_KEY }}
+    source: "/var/www/html/"
+    
+    # Destination server
+    destination: "/var/www/staging/"
+    direction: "download"
+    destination_host: ${{ secrets.STAGING_HOST }}
+    destination_username: ${{ secrets.STAGING_USER }}
+    destination_key: ${{ secrets.STAGING_KEY }}
+```
+
+### Backup to Remote Storage
+```yaml
+- name: Backup to remote server
+  uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.APP_SERVER }}
+    username: ${{ secrets.APP_USER }}
+    key: ${{ secrets.APP_KEY }}
+    source: "/data/database/"
+    destination: "/backups/$(date +%Y%m%d)/"
+    direction: "download"
+    destination_host: ${{ secrets.BACKUP_SERVER }}
+    destination_username: ${{ secrets.BACKUP_USER }}
+    destination_key: ${{ secrets.BACKUP_KEY }}
+```
+
+---
+
+## Post-Transfer Scripts
+
+### Restart Service
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+    post_script: |
+      systemctl restart nginx
+      curl -f http://localhost/health
+```
+
+### Run Remote Script
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+    post_script_path: "/opt/scripts/deploy-cleanup.sh"
+```
+
+### Database Migration
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "dist/"
+    destination: "/var/www/html/"
+    post_script: |
+      cd /var/www/html
+      php artisan migrate --force
+      php artisan cache:clear
+```
+
+---
+
+## Web Application Deployment
+
+### Node.js Application
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "dist/"
+    destination: "/var/www/node-app/"
+    post_script: |
+      cd /var/www/node-app
+      npm install --production
+      pm2 restart node-app
+```
+
+### Static Site with Cache Clear
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "public/"
+    destination: "/var/www/html/"
+    post_script: |
+      systemctl restart nginx
+      # Clear CDN cache
+      curl -X POST https://api.cdn.com/purge?site=example.com
+```
+
+---
+
+## Best Practices
+
+### 1. Use Remote Scripts for Complex Logic
+```yaml
+# Store complex deployment scripts on the server
+post_script_path: "/opt/deploy/full-deployment.sh"
+```
+
+### 2. Always Test Locally First
+```bash
+# Test your script on the server before using it
+ssh user@host "bash -n /path/to/script.sh"
+```
+
+### 3. Use Absolute Paths
+```yaml
+post_script: |
+  cd /var/www/html  # ✅ Absolute path
+  /usr/bin/node --version  # ✅ Full path to binary
+```
+
+### 4. Handle Errors Gracefully
+```yaml
+post_script: |
+  if ! systemctl restart nginx; then
+    echo "ERROR: Nginx failed to restart"
+    exit 1
+  fi
+  echo "SUCCESS: Deployed"
+```
+
+### 5. Secure Sensitive Data
+```yaml
+# ❌ Don't hardcode credentials
+post_script: |
+  mysql -u root -pPassword123 ...
+
+# ✅ Use environment or config files
+post_script: |
+  source /etc/app/config.sh
+  mysql -u "$DB_USER" -p"$DB_PASS" ...
+```
+
+### 6. Separate Concerns
+```yaml
+# Deploy in one step
+- uses: kellydc/sshft@v1
+  with:
+    source: "dist/"
+    destination: "/var/www/html/"
+    # No post_script - keep it simple
+
+# Run scripts separately for better control
+- name: Run deployment tasks
+  run: |
+    ssh user@host "/opt/scripts/deploy.sh"
+```
+
+---
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Script validation failed | Test with `bash -n script.sh` locally |
+| Permission denied | Verify user permissions on destination |
+| Dangerous command blocked | Remove blocked commands (see security section) |
+| Downloads not persisted | Use `actions/upload-artifact` for runner downloads |
+
+For more help, see [QUICK_REFERENCE.md](QUICK_REFERENCE.md#-troubleshooting).
 
 ### Blocked Commands
 The action blocks potentially dangerous commands:

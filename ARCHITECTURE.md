@@ -45,59 +45,48 @@ The action is designed with:
 
 ### Phase 1: SSH Setup
 
-**Purpose**: Establish secure SSH configuration
+**Purpose**: Establish secure SSH configuration for source and optionally destination
 
 **Components**:
 ```
-Input: SSH key, host, username, port, passphrase
+Input: SSH credentials, host, username, port
   ↓
 [Validate Key Format] → [Create SSH Directory]
   ↓
-[Generate Unique Filenames] → [Save SSH Key]
+[Generate Unique Filenames] → [Save SSH Keys]
   ↓
-[Set Permissions (600)] → [Create SSH Config]
+[Set Permissions (600)] → [Create SSH Configs]
   ↓
-[Setup Host Key Checking] → [Handle Passphrase]
+[Setup Host Key Checking] → [Handle Passphrases]
   ↓
-Output: SSH_KEY_FILE, SSH_CONFIG_FILE paths
+[For Downloads: Setup Destination SSH] (if destination_host provided)
+  ↓
+Output: SSH config files for source (and destination)
 ```
 
 **Key Features**:
+- ✅ Dual SSH setup for remote-to-remote transfers
 - ✅ SSH key format validation
-- ✅ Unique temporary file names (no conflicts)
-- ✅ Strict permission control (600/700)
+- ✅ Unique temporary file names
+- ✅ Strict permissions (600/700)
 - ✅ Optional passphrase support
-- ✅ Configurable host key checking
 
 **Error Handling**:
-- Invalid key format → Stop
-- Directory creation failure → Stop
-- Permission setting failure → Stop
+- Invalid key → Stop
+- Directory/permission failure → Stop
 
 ---
 
 ### Phase 2: Connection Test
 
-**Purpose**: Verify SSH connectivity before file operations
+**Purpose**: Verify SSH connectivity before operations
 
-**Components**:
-```
-Input: SSH config from Phase 1
-  ↓
-[Execute Test Command] → "echo SSH connection successful"
-  ↓
-[Evaluate Response]
-  ↓
-Output: Connection status (pass/fail)
-```
-
-**Key Features**:
-- ✅ Pre-flight connectivity check
-- ✅ Early failure detection
-- ✅ Uses configured SSH settings
+**Connections Tested**:
+- Source server (always)
+- Destination server (for remote-to-remote downloads)
 
 **Error Handling**:
-- Connection failure → Stop (prevents wasted operations)
+- Connection failure → Stop
 
 ---
 
@@ -173,36 +162,38 @@ Output: success=true
 
 #### Download Subflow:
 ```
-Input: Remote source path, local destination
+Input: Remote source, destination
   ↓
-[Verify Remote Source Exists]
+[Verify Source Exists] → [Compress on Remote]
   ↓
-[Compress on Remote] → tar -czf
+[Determine Transfer Mode]
+  ├─ Remote → Runner (no destination_host)
+  │   ↓
+  │   [Download via SCP] → [Extract on Runner] → [Validate Paths]
+  │
+  └─ Remote → Remote (with destination_host)
+      ↓
+      [Download to Runner] → [Upload to Destination] → [Extract on Destination]
   ↓
-[Download to Local] → scp (to GitHub Actions runner)
-  ↓
-[Create Local Destination] → On runner (ephemeral storage)
-  ↓
-[Extract Locally] → tar -xzf
-  ↓
-[Cleanup Temp Files] → Local & Remote
+[Cleanup Temp Files]
   ↓
 Output: success=true
 ```
 
-**⚠️ Important**: Downloads are stored on the GitHub Actions runner's ephemeral storage. The runner and all its files are destroyed when the workflow completes. To persist downloaded files, use `actions/upload-artifact` to save them as workflow artifacts.
+**Transfer Modes**:
+- **Remote → Runner**: Files land on runner (ephemeral - use `actions/upload-artifact` to persist)
+- **Remote → Remote**: Server-to-server via runner as intermediary
 
 **Key Features**:
-- ✅ Bidirectional transfer (upload/download)
-- ✅ Automatic compression
-- ✅ Integrity checks at each step
-- ✅ Atomic cleanup (trap handlers)
+- ✅ Dual transfer modes
+- ✅ Auto-compression
+- ✅ Integrity checks
+- ✅ Atomic cleanup
 
 **Error Handling**:
 - Source doesn't exist → Stop
 - Transfer failure → Stop
 - Extraction failure → Stop
-- Cleanup failure → Log, continue
 
 ---
 
@@ -341,33 +332,25 @@ Local tar.gz ──[SCP]──> Remote temp dir
                             ↓
                     [Extract] → [Move to Destination]
                             ↓
-                    Destination Files
-```
+                ### Download Operations
 
-### Download Operation
+#### Remote → Runner
+```
+Remote Files → [Compress] → SCP → Runner → [Extract] → Local Files
+```
+⚠️ Runner storage is ephemeral - use `actions/upload-artifact` to persist
 
+#### Remote → Remote
 ```
-Remote Files
-    ↓
-[Validate] → [Compress]
-    ↓
-Remote tar.gz ──[SCP]──> Local temp dir
-    ↓
-[Extract] → [Move to Destination]
-    ↓
-Local Files
+Source Server → [Compress] → SCP → Runner → SCP → Dest Server → [Extract] → Files
 ```
+✅ Files persist on destination server
 
 ### Backup Operation
-
 ```
-Destination Files (Remote)
-    ↓
-[Compress] → tar.gz
-    ↓
-~/backups/backup_name_timestamp_id.tar.gz
-    ↓
-[Retention Policy] → Keep last 10
+Destination Files → [Compress] → ~/backups/backup_YYYYMMDD_HHMMSS_id.tar.gz
+                                              ↓
+                                    [Retention: Keep last 10]
 ```
 
 ---
@@ -376,28 +359,22 @@ Destination Files (Remote)
 
 ### Environment Variables
 
-The action uses GitHub environment variables to pass state between steps:
+State shared between steps:
 
 ```bash
-# Set in Phase 1 (SSH Setup)
-SSH_KEY_FILE=/path/to/temp_key_timestamp_random
-SSH_CONFIG_FILE=/path/to/temp_config_timestamp_random
-SSH_KNOWN_HOSTS=/path/to/temp_known_hosts_timestamp_random
+# Source SSH (always set)
+SSH_KEY_FILE, SSH_CONFIG_FILE, SSH_KNOWN_HOSTS
 
-# Available in all subsequent phases
+# Destination SSH (for remote-to-remote downloads)
+DEST_SSH_KEY_FILE, DEST_SSH_CONFIG_FILE, DEST_SSH_KNOWN_HOSTS
 ```
 
 ### Step Outputs
 
-Each phase produces outputs via `$GITHUB_OUTPUT`:
-
 ```yaml
-Phase 1: None (internal state only)
-Phase 2: None (success/failure via exit code)
-Phase 3: backup_created, backup_path, backup_size
-Phase 4: success, error
-Phase 5: script_executed, script_output, script_error
-Phase 6: None (cleanup always succeeds)
+backup: backup_created, backup_path, backup_size
+transfer: success, error
+post_script: script_executed, script_output, script_error
 ```
 
 ---
@@ -406,9 +383,23 @@ Phase 6: None (cleanup always succeeds)
 
 ### Critical Errors (Stop Execution)
 
-These errors terminate the action immediately:
-
 1. **Phase 1**: Invalid SSH key, permission errors
+2. **Phase 2**: Connection failure
+3. **Phase 3**: Backup creation failure (if enabled and destination exists)
+4. **Phase 4**: Source missing, transfer failure, extraction failure, disk space
+5. **Phase 5**: Non-blocking (errors logged only)
+6. **Phase 6**: Never fails
+
+---
+
+## Security Features
+
+- **File size limits**: 2GB upload, 10GB download
+- **Disk space validation**: 20% buffer required
+- **Script validation**: Syntax + structure + dangerous command detection
+- **Resource limits**: 100 processes, 2GB memory, 5min CPU, 10min timeout
+- **Secure cleanup**: SSH keys overwritten before deletion
+- **Path validation**: Prevents traversal attacks, validates symlinks
 2. **Phase 2**: Connection failure
 3. **Phase 3**: Backup failure (if enabled and required)
 4. **Phase 4**: Source missing, transfer failure, extraction failure

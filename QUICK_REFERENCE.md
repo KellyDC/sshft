@@ -26,8 +26,10 @@
 ### Optional Inputs
 - `direction` - `upload` (default) or `download`
 - `backup_before_transfer` - `true` (default) or `false`
-- `post_script` - Inline script to run after transfer
+- `post_script` / `post_script_path` - Script to run after transfer
 - `port` - SSH port (default: `22`)
+- `destination_host` - For remote-to-remote downloads
+- `destination_username` / `destination_key` - Destination server credentials
 
 ### Key Outputs
 - `backup_created` - Whether backup was made
@@ -49,18 +51,37 @@
     destination: "/var/www/html/"
 ```
 
-### Download
+### Download (Remote → Runner)
 ```yaml
 - uses: kellydc/sshft@v1
   with:
-    # ... same as above
+    host: ${{ secrets.SSH_HOST }}  # Source server
+    username: ${{ secrets.SSH_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    source: "/var/log/app.log"  # Remote path
+    destination: "./logs/"  # Runner path
     direction: "download"
 
-# ⚠️ IMPORTANT: Downloads go to runner (ephemeral). Save as artifacts to persist!
+# ⚠️ Runner storage is ephemeral. Save as artifacts to persist!
 - uses: actions/upload-artifact@v4
   with:
     name: downloaded-files
-    path: ./destination/
+    path: ./logs/
+```
+
+### Download (Remote → Remote)
+```yaml
+- uses: kellydc/sshft@v1
+  with:
+    host: ${{ secrets.SOURCE_HOST }}  # Source server
+    username: ${{ secrets.SOURCE_USER }}
+    key: ${{ secrets.SOURCE_KEY }}
+    source: "/data/backup.tar.gz"
+    destination: "/backups/"  # Destination server path
+    direction: "download"
+    destination_host: ${{ secrets.DEST_HOST }}
+    destination_username: ${{ secrets.DEST_USER }}
+    destination_key: ${{ secrets.DEST_KEY }}
 ```
 
 ### Disable Backup

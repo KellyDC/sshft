@@ -3,7 +3,7 @@ description: "A GitHub Action to securely transfer files over SSH using SCP with
 author: "KellyDC"
 inputs:
   host:
-    description: "SSH host to connect to"
+    description: "SSH host to connect to (source host for download, destination host for upload)"
     required: true
   port:
     description: "SSH port"
@@ -22,12 +22,28 @@ inputs:
     description: "Source file or directory to transfer"
     required: true
   destination:
-    description: "Destination path on the target server"
+    description: "Destination path (on destination server for download direction, on host for upload direction)"
     required: true
   direction:
-    description: "Transfer direction"
+    description: "Transfer direction (upload: runner->remote, download: remote->remote or remote->runner)"
     required: false
     default: "upload"
+  destination_host:
+    description: "Destination SSH host for download direction (if not provided, files download to runner)"
+    required: false
+  destination_port:
+    description: "Destination SSH port for download direction"
+    required: false
+    default: "22"
+  destination_username:
+    description: "Destination SSH username for download direction"
+    required: false
+  destination_key:
+    description: "Destination SSH private key for download direction"
+    required: false
+  destination_passphrase:
+    description: "Passphrase for the destination SSH private key"
+    required: false
   recursive:
     description: "Transfer files recursively"
     required: false
@@ -130,11 +146,69 @@ runs:
           echo "${{ inputs.passphrase }}" | ssh-add "$SSH_KEY_FILE"
         fi
 
+        # Setup destination SSH configuration for remote-to-remote download
+        if [ "${{ inputs.direction }}" = "download" ] && [ -n "${{ inputs.destination_host }}" ]; then
+          echo "Setting up destination SSH configuration for remote-to-remote transfer..."
+          
+          # Generate unique destination key filename
+          DEST_SSH_KEY_FILE="$HOME/.ssh/sshft_dest_key_$(date +%s)_$RANDOM"
+          DEST_SSH_CONFIG_FILE="$HOME/.ssh/sshft_dest_config_$(date +%s)_$RANDOM"
+          DEST_SSH_KNOWN_HOSTS="$HOME/.ssh/sshft_dest_known_hosts_$(date +%s)_$RANDOM"
+          
+          # Export for other steps
+          echo "DEST_SSH_KEY_FILE=$DEST_SSH_KEY_FILE" >> $GITHUB_ENV
+          echo "DEST_SSH_CONFIG_FILE=$DEST_SSH_CONFIG_FILE" >> $GITHUB_ENV
+          echo "DEST_SSH_KNOWN_HOSTS=$DEST_SSH_KNOWN_HOSTS" >> $GITHUB_ENV
+          
+          # Save destination SSH key
+          touch "$DEST_SSH_KEY_FILE"
+          chmod 600 "$DEST_SSH_KEY_FILE"
+          echo "${{ inputs.destination_key }}" > "$DEST_SSH_KEY_FILE"
+          
+          # Verify destination key is valid
+          if ! ssh-keygen -l -f "$DEST_SSH_KEY_FILE" &>/dev/null; then
+            echo "Error: The provided destination SSH key appears to be invalid"
+            rm -f "$DEST_SSH_KEY_FILE"
+            exit 1
+          fi
+          
+          # Create destination SSH config
+          printf "Host %s\nPort %s\nUser %s\nIdentityFile %s\nBatchMode yes\nConnectTimeout 30\nServerAliveInterval 60\nServerAliveCountMax 10\n" "${{ inputs.destination_host }}" "${{ inputs.destination_port }}" "${{ inputs.destination_username }}" "$DEST_SSH_KEY_FILE" > "$DEST_SSH_CONFIG_FILE"
+          
+          # Configure destination host key checking
+          if [ "${{ inputs.strict_host_key_checking }}" = "false" ]; then
+            echo "  StrictHostKeyChecking no" >> "$DEST_SSH_CONFIG_FILE"
+            echo "  UserKnownHostsFile=/dev/null" >> "$DEST_SSH_CONFIG_FILE"
+          else
+            touch "$DEST_SSH_KNOWN_HOSTS"
+            chmod 600 "$DEST_SSH_KNOWN_HOSTS"
+            ssh-keyscan -p ${{ inputs.destination_port }} -H ${{ inputs.destination_host }} >> "$DEST_SSH_KNOWN_HOSTS" 2>/dev/null || true
+            echo "  StrictHostKeyChecking yes" >> "$DEST_SSH_CONFIG_FILE"
+            echo "  UserKnownHostsFile=$DEST_SSH_KNOWN_HOSTS" >> "$DEST_SSH_CONFIG_FILE"
+          fi
+          
+          chmod 600 "$DEST_SSH_CONFIG_FILE"
+          
+          # Handle destination SSH key passphrase if provided
+          if [ -n "${{ inputs.destination_passphrase }}" ]; then
+            echo "${{ inputs.destination_passphrase }}" | ssh-add "$DEST_SSH_KEY_FILE"
+          fi
+        fi
+
     - name: Verify SSH connection
       shell: bash
       run: |
         if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "echo SSH connection successful"; then
           echo "Error: Failed to establish SSH connection"
+          exit 1
+        fi
+
+    - name: Verify destination SSH connection
+      shell: bash
+      if: inputs.direction == 'download' && inputs.destination_host != ''
+      run: |
+        if ! ssh -F "$DEST_SSH_CONFIG_FILE" ${{ inputs.destination_host }} "echo Destination SSH connection successful"; then
+          echo "Error: Failed to establish destination SSH connection"
           exit 1
         fi
 
@@ -163,7 +237,7 @@ runs:
 
         # Create backup filename with timestamp
         BACKUP_FILENAME="backup_${DEST_BASENAME}_${BACKUP_TIMESTAMP}_${RANDOM_ID}.tar.gz"
-        BACKUP_DIR="$HOME/backups"
+        BACKUP_DIR="~/backups"
         BACKUP_PATH="$BACKUP_DIR/$BACKUP_FILENAME"
 
         # Check if destination exists on remote server
@@ -520,9 +594,357 @@ runs:
           fi
           
         else
-          # DOWNLOAD: Remote -> Local
+          # DOWNLOAD: Remote -> Remote or Remote -> Runner
           # Normalize remote source path (remove trailing slash)
           REMOTE_SOURCE="${{ inputs.source }}"
+          if [[ "$REMOTE_SOURCE" == */ ]]; then
+            REMOTE_SOURCE="${REMOTE_SOURCE%/}"
+          fi
+          
+          # Verify remote source exists
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -e \"$REMOTE_SOURCE\" ]"; then
+            echo "Error: Remote source does not exist: $REMOTE_SOURCE"
+            echo "error=Remote source not found" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Calculate remote source size for validation
+          echo "Calculating remote source size..."
+          REMOTE_SIZE_BYTES=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
+            if [ -d \"$REMOTE_SOURCE\" ]; then
+              du -sb \"$REMOTE_SOURCE\" 2>/dev/null | cut -f1 || echo 0
+            else
+              stat -c%s \"$REMOTE_SOURCE\" 2>/dev/null || stat -f%z \"$REMOTE_SOURCE\" 2>/dev/null || echo 0
+            fi
+          " 2>&1) || REMOTE_SIZE_BYTES=0
+          
+          REMOTE_SIZE_MB=$((REMOTE_SIZE_BYTES / 1024 / 1024))
+          echo "Remote source size: ${REMOTE_SIZE_MB}MB (${REMOTE_SIZE_BYTES} bytes)"
+          
+          # Security: Prevent resource exhaustion with reasonable file size limit (10GB)
+          MAX_SIZE_BYTES=$((10 * 1024 * 1024 * 1024))
+          if [ "$REMOTE_SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
+            echo "Error: Remote source size (${REMOTE_SIZE_MB}MB) exceeds maximum allowed size (10GB)"
+            echo "error=Remote source size exceeds limit" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Create remote temp directory on source server
+          echo "Creating remote temporary directory on source server..."
+          if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "mkdir -p \"$REMOTE_TEMP_DIR\""; then
+            echo "Error: Failed to create remote temporary directory"
+            echo "error=Remote temp dir creation failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          REMOTE_DIR=$(dirname "$REMOTE_SOURCE")
+          REMOTE_BASE=$(basename "$REMOTE_SOURCE")
+          NEEDS_COMPRESSION=true
+          DOWNLOAD_FILE=""
+          
+          # Check if source is a single compressed file
+          if ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -f \"$REMOTE_SOURCE\" ]"; then
+            # Check if it's compressed by extension
+            case "${REMOTE_BASE##*.}" in
+              gz|tgz|tar.gz|bz2|tbz2|tar.bz2|xz|txz|tar.xz|zip|rar|7z|tar|lz4|zst)
+                echo "Remote source is already compressed, transferring directly..."
+                NEEDS_COMPRESSION=false
+                DOWNLOAD_FILE="$REMOTE_TEMP_DIR/$REMOTE_BASE"
+                # Copy file to temp directory
+                if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "cp \"$REMOTE_SOURCE\" \"$DOWNLOAD_FILE\""; then
+                  echo "Error: Failed to copy remote file to temp directory"
+                  echo "error=Remote file copy failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "Compressing single file on remote server..."
+                DOWNLOAD_FILE="$REMOTE_TEMP_DIR/$TAR_FILE"
+                if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf \"$DOWNLOAD_FILE\" -C \"$REMOTE_DIR\" \"$REMOTE_BASE\""; then
+                  echo "Error: Failed to compress file on remote server"
+                  echo "error=Remote compression failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+                ;;
+            esac
+          else
+            # Directory - always compress for consistency
+            echo "Compressing directory on remote server..."
+            DOWNLOAD_FILE="$REMOTE_TEMP_DIR/$TAR_FILE"
+            if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "tar -czf \"$DOWNLOAD_FILE\" -C \"$REMOTE_DIR\" \"$REMOTE_BASE\""; then
+              echo "Error: Failed to compress directory on remote server"
+              echo "error=Remote compression failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
+          
+          # Check if this is remote-to-remote or remote-to-runner transfer
+          if [ -n "${{ inputs.destination_host }}" ]; then
+            # REMOTE-TO-REMOTE TRANSFER
+            echo "Performing remote-to-remote transfer..."
+            
+            DEST_PATH="${{ inputs.destination }}"
+            if [[ "$DEST_PATH" == */ ]]; then
+              DEST_PATH="${DEST_PATH%/}"
+            fi
+            
+            # Create destination temp directory on destination server
+            DEST_TEMP_DIR="/tmp/sshft_dest_temp_${UNIQUE_SUFFIX}"
+            echo "Creating temporary directory on destination server..."
+            if ! ssh -F "$DEST_SSH_CONFIG_FILE" ${{ inputs.destination_host }} "mkdir -p \"$DEST_TEMP_DIR\""; then
+              echo "Error: Failed to create temp directory on destination server"
+              echo "error=Destination temp dir creation failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Validate and create destination directory on destination server
+            DEST_CHECK=$(ssh -F "$DEST_SSH_CONFIG_FILE" ${{ inputs.destination_host }} "
+              set -e
+              
+              # Create destination directory if it doesn't exist
+              if [ ! -e \"$DEST_PATH\" ]; then
+                echo 'Destination does not exist, creating directory...'
+                mkdir -p \"$DEST_PATH\"
+                chmod 755 \"$DEST_PATH\"
+                echo 'Destination directory created'
+              fi
+              
+              # Check if it's a directory
+              if [ ! -d \"$DEST_PATH\" ]; then
+                echo 'ERROR:Destination is not a directory'
+                exit 1
+              fi
+              
+              # Check if writable
+              if [ ! -w \"$DEST_PATH\" ]; then
+                echo 'ERROR:Destination is not writable'
+                exit 1
+              fi
+              
+              echo 'OK:Destination validated'
+            " 2>&1) || DEST_ERROR=$?
+            
+            if [ -n "$DEST_ERROR" ] && [ "$DEST_ERROR" -ne 0 ]; then
+              ERROR_MSG=$(echo "$DEST_CHECK" | grep "^ERROR:" | sed 's/^ERROR://' | head -n 1)
+              echo "Error: ${ERROR_MSG:-Destination directory issue}"
+              echo "error=Destination validation failed: ${ERROR_MSG:-unknown}" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Check destination disk space
+            echo "Checking destination disk space..."
+            DEST_SPACE_CHECK=$(ssh -F "$DEST_SSH_CONFIG_FILE" ${{ inputs.destination_host }} "
+              set -e
+              AVAILABLE_BYTES=\$(df -B1 \"$DEST_PATH\" | tail -1 | awk '{print \$4}')
+              REQUIRED_BYTES=$((REMOTE_SIZE_BYTES + REMOTE_SIZE_BYTES / 5))
+              
+              if [ \"\$AVAILABLE_BYTES\" -lt \"\$REQUIRED_BYTES\" ]; then
+                AVAILABLE_MB=\$((\$AVAILABLE_BYTES / 1024 / 1024))
+                REQUIRED_MB=\$((\$REQUIRED_BYTES / 1024 / 1024))
+                echo \"ERROR:Insufficient disk space (available: \${AVAILABLE_MB}MB, required: \${REQUIRED_MB}MB)\"
+                exit 1
+              fi
+              
+              echo \"OK:Sufficient disk space\"
+            " 2>&1) || SPACE_ERROR=$?
+            
+            if [ -n "$SPACE_ERROR" ] && [ "$SPACE_ERROR" -ne 0 ]; then
+              ERROR_MSG=$(echo "$DEST_SPACE_CHECK" | grep "^ERROR:" | sed 's/^ERROR://' | head -n 1)
+              echo "Error: ${ERROR_MSG:-Insufficient destination disk space}"
+              echo "error=Disk space check failed: ${ERROR_MSG:-unknown}" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Transfer file from source to destination using ProxyJump through runner
+            # First, download to runner as intermediary
+            echo "Transferring file from source to runner (intermediary)..."
+            LOCAL_DOWNLOAD_FILE="$TEMP_DIR/$(basename "$DOWNLOAD_FILE")"
+            if ! scp -F "$SSH_CONFIG_FILE" "${{ inputs.host }}:$DOWNLOAD_FILE" "$LOCAL_DOWNLOAD_FILE"; then
+              echo "Error: Failed to download file from source"
+              echo "error=Download from source failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Upload from runner to destination
+            echo "Transferring file from runner to destination server..."
+            DEST_REMOTE_FILE="$DEST_TEMP_DIR/$(basename "$DOWNLOAD_FILE")"
+            if ! scp -F "$DEST_SSH_CONFIG_FILE" "$LOCAL_DOWNLOAD_FILE" "${{ inputs.destination_host }}:$DEST_REMOTE_FILE"; then
+              echo "Error: Failed to upload file to destination"
+              echo "error=Upload to destination failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Extract/move files on destination server
+            BASENAME_SOURCE=$(basename "$REMOTE_SOURCE")
+            if [ "$NEEDS_COMPRESSION" = true ]; then
+              echo "Extracting files on destination server..."
+              if ! ssh -F "$DEST_SSH_CONFIG_FILE" ${{ inputs.destination_host }} "cd \"$DEST_TEMP_DIR\" && tar -xzf \"$(basename "$DOWNLOAD_FILE")\" && cp -r \"$BASENAME_SOURCE\"/* \"$DEST_PATH/\""; then
+                echo "Error: Failed to extract files on destination server"
+                echo "error=Destination extraction failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+            else
+              echo "Moving compressed file to destination..."
+              if ! ssh -F "$DEST_SSH_CONFIG_FILE" ${{ inputs.destination_host }} "cp \"$DEST_REMOTE_FILE\" \"$DEST_PATH/\""; then
+                echo "Error: Failed to move file to destination"
+                echo "error=Destination file move failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+            fi
+            
+            # Cleanup destination temp directory
+            echo "Cleaning up destination temporary files..."
+            ssh -F "$DEST_SSH_CONFIG_FILE" ${{ inputs.destination_host }} "rm -rf \"$DEST_TEMP_DIR\"" 2>/dev/null || true
+            
+          else
+            # REMOTE-TO-RUNNER TRANSFER
+            echo "Performing remote-to-runner transfer..."
+            
+            # Download the file to runner
+            echo "Downloading file from remote server to runner..."
+            LOCAL_DOWNLOAD_FILE="$TEMP_DIR/$(basename "$DOWNLOAD_FILE")"
+            if ! scp -F "$SSH_CONFIG_FILE" "${{ inputs.host }}:$DOWNLOAD_FILE" "$LOCAL_DOWNLOAD_FILE"; then
+              echo "Error: Failed to download file"
+              echo "error=Download failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Validate and create local destination directory
+            LOCAL_DEST="${{ inputs.destination }}"
+            if [[ "$LOCAL_DEST" == */ ]]; then
+              LOCAL_DEST="${LOCAL_DEST%/}"
+            fi
+            
+            # Determine if source is a file or directory
+            IS_SOURCE_FILE=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "[ -f \"$REMOTE_SOURCE\" ] && echo 'true' || echo 'false'")
+            
+            # Check if destination exists and validate it
+            if [ -e "$LOCAL_DEST" ]; then
+              # For single file downloads, destination should be overwritten if it exists
+              if [ "$IS_SOURCE_FILE" = "true" ] && [ -f "$LOCAL_DEST" ]; then
+                echo "Destination file exists and will be overwritten: $LOCAL_DEST"
+              elif [ "$IS_SOURCE_FILE" = "true" ] && [ -d "$LOCAL_DEST" ]; then
+                echo "Error: Destination is a directory but source is a file: $LOCAL_DEST"
+                echo "error=Destination type mismatch" >> $GITHUB_OUTPUT
+                exit 1
+              elif [ "$IS_SOURCE_FILE" = "false" ] && [ ! -d "$LOCAL_DEST" ]; then
+                echo "Error: Local destination exists but is not a directory: $LOCAL_DEST"
+                echo "error=Local destination is not a directory" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+              
+              # For directories, check if writable
+              if [ -d "$LOCAL_DEST" ] && [ ! -w "$LOCAL_DEST" ]; then
+                echo "Error: Local destination directory is not writable: $LOCAL_DEST"
+                echo "error=Local destination is not writable" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+              
+              # Security: Check if destination is a symlink
+              if [ -L "$LOCAL_DEST" ]; then
+                REAL_DEST=$(realpath "$LOCAL_DEST" 2>/dev/null || readlink -f "$LOCAL_DEST" 2>/dev/null || echo '')
+                if [ -z "$REAL_DEST" ]; then
+                  echo "Error: Cannot resolve symlink destination: $LOCAL_DEST"
+                  echo "error=Cannot resolve local destination symlink" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+                echo "Warning: Local destination is a symlink pointing to: $REAL_DEST"
+              fi
+            else
+              # Doesn't exist - create parent directory for files or the directory itself for dirs
+              if [ "$IS_SOURCE_FILE" = "true" ]; then
+                # For single file, create parent directory
+                PARENT_DIR=$(dirname "$LOCAL_DEST")
+                if [ ! -d "$PARENT_DIR" ]; then
+                  echo "Creating parent directory: $PARENT_DIR"
+                  if ! mkdir -p "$PARENT_DIR" 2>&1; then
+                    echo "Error: Failed to create parent directory: $PARENT_DIR"
+                    echo "error=Failed to create parent directory" >> $GITHUB_OUTPUT
+                    exit 1
+                  fi
+                fi
+              else
+                # For directory, create the destination directory
+                echo "Creating local destination directory: $LOCAL_DEST"
+                if ! mkdir -p "$LOCAL_DEST" 2>&1; then
+                  echo "Error: Failed to create local destination directory: $LOCAL_DEST"
+                  echo "error=Failed to create local destination directory" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+                
+                # Verify it was created and is writable (for directories only)
+                if [ ! -d "$LOCAL_DEST" ] || [ ! -w "$LOCAL_DEST" ]; then
+                  echo "Error: Failed to create writable destination directory"
+                  echo "error=Destination directory creation failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              fi
+            fi
+            
+            # Check local disk space before extraction
+            echo "Checking local disk space..."
+            if [ "$IS_SOURCE_FILE" = "true" ]; then
+              CHECK_PATH=$(dirname "$LOCAL_DEST")
+            else
+              CHECK_PATH="$LOCAL_DEST"
+            fi
+            AVAILABLE_BYTES=$(df -B1 "$CHECK_PATH" | tail -1 | awk '{print $4}')
+            # Add 20% buffer for extraction overhead
+            REQUIRED_BYTES=$((REMOTE_SIZE_BYTES + REMOTE_SIZE_BYTES / 5))
+            
+            if [ "$AVAILABLE_BYTES" -lt "$REQUIRED_BYTES" ]; then
+              AVAILABLE_MB=$((AVAILABLE_BYTES / 1024 / 1024))
+              REQUIRED_MB=$((REQUIRED_BYTES / 1024 / 1024))
+              echo "Error: Insufficient local disk space (available: ${AVAILABLE_MB}MB, required: ${REQUIRED_MB}MB)"
+              echo "error=Insufficient local disk space" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Extract/move files locally
+            if [ "$NEEDS_COMPRESSION" = true ]; then
+              echo "Extracting files locally..."
+              if ! tar -xzf "$LOCAL_DOWNLOAD_FILE" -C "$TEMP_DIR"; then
+                echo "Error: Failed to extract files locally"
+                echo "error=Local extraction failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
+              
+              # Copy extracted content to destination
+              if [ "$IS_SOURCE_FILE" = "true" ]; then
+                # Single file - copy directly to destination file path
+                EXTRACTED_FILE="$TEMP_DIR/$REMOTE_BASE"
+                if ! cp "$EXTRACTED_FILE" "$LOCAL_DEST"; then
+                  echo "Error: Failed to copy extracted file to destination"
+                  echo "error=Local file copy failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              else
+                # Directory - copy contents to destination directory
+                if ! cp -r "$TEMP_DIR/$REMOTE_BASE"/* "$LOCAL_DEST/"; then
+                  echo "Error: Failed to copy extracted files to destination"
+                  echo "error=Local copy failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              fi
+            else
+              echo "Moving downloaded compressed file to destination..."
+              if [ "$IS_SOURCE_FILE" = "true" ]; then
+                # Single file - move to destination file path
+                if ! cp "$LOCAL_DOWNLOAD_FILE" "$LOCAL_DEST"; then
+                  echo "Error: Failed to move downloaded file to destination"
+                  echo "error=Local file move failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              else
+                # Directory - move to destination directory
+                if ! cp "$LOCAL_DOWNLOAD_FILE" "$LOCAL_DEST/"; then
+                  echo "Error: Failed to move downloaded file to destination"
+                  echo "error=Local file move failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              fi
+            fi
+          fi
           if [[ "$REMOTE_SOURCE" == */ ]]; then
             REMOTE_SOURCE="${REMOTE_SOURCE%/}"
           fi
@@ -1188,16 +1610,27 @@ runs:
           ssh-agent -k || true
         fi
 
-        # Securely remove SSH files
+        # Securely remove source SSH files
         if [ -f "$SSH_KEY_FILE" ]; then
           # Overwrite with zeros before deleting
           dd if=/dev/zero of="$SSH_KEY_FILE" bs=1k count=1 conv=notrunc >/dev/null 2>&1 || true
           rm -f "$SSH_KEY_FILE"
         fi
 
-        # Remove other temporary SSH files
+        # Remove other source temporary SSH files
         rm -f "$SSH_CONFIG_FILE"
         rm -f "$SSH_KNOWN_HOSTS"
+
+        # Securely remove destination SSH files (if they exist)
+        if [ -f "$DEST_SSH_KEY_FILE" ]; then
+          # Overwrite with zeros before deleting
+          dd if=/dev/zero of="$DEST_SSH_KEY_FILE" bs=1k count=1 conv=notrunc >/dev/null 2>&1 || true
+          rm -f "$DEST_SSH_KEY_FILE"
+        fi
+
+        # Remove other destination temporary SSH files
+        rm -f "$DEST_SSH_CONFIG_FILE"
+        rm -f "$DEST_SSH_KNOWN_HOSTS"
 
 branding:
   icon: "upload-cloud"
