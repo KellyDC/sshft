@@ -5,7 +5,7 @@
 **Secure, bidirectional file transfer via SSH with automatic backups, compression, and comprehensive security validations.**
 
 Key capabilities:
-- ✅ Upload/download with automatic tar.gz compression
+- ✅ Upload with tar.gz compression, download with rsync
 - ✅ Auto-backup before upload (keeps last 10)
 - ✅ 2GB upload / 10GB download limits, disk space validation
 - ✅ Dangerous command blocking in scripts
@@ -106,7 +106,7 @@ jobs:
 **Backup Features:**
 - ✅ Automatic backup creation before file transfer (upload only)
 - ✅ Backups stored in `~/backups/` on remote server (user's home directory)
-- ✅ Descriptive filenames using full destination path: `backup_var_www_mysite_{YYYYMMDD_HHMMSS}_{random_id}.tar.gz`
+- ✅ Descriptive filenames using full destination path: `var_www_mysite_{YYYYMMDD_HHMMSS}_{random_id}.tar.gz`
 - ✅ Efficient tar.gz compression
 - ✅ Automatic retention policy (keeps last 10 backups per destination)
 - ✅ Comprehensive error handling
@@ -115,10 +115,10 @@ jobs:
 
 ### Downloading Files from Server
 
-**Two download modes available:**
+**Two download modes available (using rsync for efficient transfer):**
 
 #### Remote-to-Runner Download
-Files download to GitHub runner (ephemeral - use `actions/upload-artifact` to persist).
+Files download to GitHub runner using rsync (ephemeral - use `actions/upload-artifact` to persist).
 
 ```yaml
 jobs:
@@ -144,7 +144,7 @@ jobs:
 ```
 
 #### Remote-to-Remote Download
-Transfer files directly between servers (persistent storage).
+Transfer files directly between servers using rsync (persistent storage, preserves permissions and timestamps).
 
 ```yaml
 jobs:
@@ -172,9 +172,11 @@ jobs:
 | Feature | Upload | Download (Remote→Runner) | Download (Remote→Remote) |
 |---------|--------|------------------------|-------------------------|
 | **Direction** | Runner → Remote | Remote → Runner | Remote → Remote |
+| **Transfer Method** | tar.gz + scp | rsync | rsync (direct) |
 | **Backup Created** | ✅ Yes (if enabled) | ❌ No | ❌ No |
 | **Persistence** | ✅ Persistent | ⚠️ Ephemeral (needs artifact) | ✅ Persistent |
 | **Size Limit** | 2GB | 10GB | 10GB |
+| **Preserves Attributes** | ✅ Yes | ✅ Yes (permissions, timestamps) | ✅ Yes (permissions, timestamps) |
 | **Use Case** | Deploy code | Retrieve logs/data | Server migration/backup |
 | **Requires destination_host** | ❌ No | ❌ No | ✅ Yes |
 

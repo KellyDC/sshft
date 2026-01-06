@@ -8,7 +8,7 @@ This guide provides easy-to-understand visual representations of how the sshft a
 
 ```
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃                         sshft Action                            ┃
+┃                         sshft Action                           ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
@@ -99,26 +99,29 @@ Remote Server                         GitHub Actions Runner (Ephemeral)
 
     [Files]
        │
-       ▼
-   Compress────────────────────┐
-    (tar.gz)                   │
-       │                       │
-       ▼                       │
-   Transfer ───────────────────┼──────▶ Receive
-       │                       │           │
-       │                       │           ▼
-       │                       │       Extract
-       │                       │           │
-       │                       │           ▼
-       │                       │    [Files on Runner]
-       │                       │
-    Cleanup ◀──────────────────┴─────▶ Cleanup
+       │  rsync -avz
+       │  (compressed)
+       │
+       │
+       └─────────────────────────────────────────▶ Receive
+                                                      │
+                                                      ▼
+                                               [Files on Runner]
+                                                (permissions,
+                                                 timestamps
+                                                 preserved)
 ```
 
 **⚠️ CRITICAL**: Downloads go to the GitHub Actions runner (ephemeral storage).
 - Runner is destroyed after workflow completes
 - Downloaded files are **LOST** unless saved as artifacts
 - **Always use `actions/upload-artifact` to persist downloads**
+
+**✨ Benefits of rsync**:
+- No compression/extraction overhead
+- Preserves file permissions and timestamps
+- Handles hidden files (dotfiles) automatically
+- Built-in compression during transfer
 
 Note: Backup is NOT created for downloads (only for uploads)
 
@@ -173,19 +176,19 @@ Your Script
 
 ```
 Deployment 1:
-    [Transfer] → [Backup Created: backup_app_20250101_120000.tar.gz]
+    [Transfer] → [Backup Created: app_20250101_120000.tar.gz]
 
 Deployment 2:
-    [Transfer] → [Backup Created: backup_app_20250102_120000.tar.gz]
+    [Transfer] → [Backup Created: app_20250102_120000.tar.gz]
 
 Deployment 3:
-    [Transfer] → [Backup Created: backup_app_20250103_120000.tar.gz]
+    [Transfer] → [Backup Created: app_20250103_120000.tar.gz]
 
     ...
 
 Deployment 11:
-    [Transfer] → [Backup Created: backup_app_20250111_120000.tar.gz]
-                 [Delete Oldest: backup_app_20250101_120000.tar.gz]
+    [Transfer] → [Backup Created: app_20250111_120000.tar.gz]
+                 [Delete Oldest: app_20250101_120000.tar.gz]
 
 Result: Only last 10 backups kept
 ```
@@ -194,17 +197,19 @@ Result: Only last 10 backups kept
 
 ```
 ~/backups/
-├── backup_html_20250110_120000_abc123.tar.gz  ← Newest
-├── backup_html_20250109_120000_def456.tar.gz
-├── backup_html_20250108_120000_ghi789.tar.gz
-├── backup_html_20250107_120000_jkl012.tar.gz
-├── backup_html_20250106_120000_mno345.tar.gz
-├── backup_html_20250105_120000_pqr678.tar.gz
-├── backup_html_20250104_120000_stu901.tar.gz
-├── backup_html_20250103_120000_vwx234.tar.gz
-├── backup_html_20250102_120000_yza567.tar.gz
-└── backup_html_20250101_120000_bcd890.tar.gz  ← Oldest (will be deleted next)
-```
+├── var_www_html_20250110_120000_abc123.tar.gz  ← Newest
+├── var_www_html_20250109_120000_def456.tar.gz
+├── var_www_html_20250108_120000_ghi789.tar.gz
+├── var_www_html_20250107_120000_jkl012.tar.gz
+├── var_www_html_20250106_120000_mno345.tar.gz
+├── var_www_html_20250105_120000_pqr678.tar.gz
+├── var_www_html_20250104_120000_stu901.tar.gz
+├── var_www_html_20250103_120000_vwx234.tar.gz
+├── var_www_html_20250102_120000_yza567.tar.gz
+└── var_www_html_20250101_120000_bcd890.tar.gz  ← Oldest (will be deleted next)
+
+Note: Filenames use full destination path for clarity
+      (e.g., /var/www/html/ becomes var_www_html_)
 
 ---
 

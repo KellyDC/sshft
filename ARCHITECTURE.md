@@ -110,7 +110,7 @@ Input: Destination path, direction
   Exists? → [Create ~/backups Directory]
   No? → Skip (first deploy)
   ↓
-[Generate Unique Filename] → backup_name_YYYYMMDD_HHMMSS_randomid.tar.gz
+[Generate Unique Filename] → name_YYYYMMDD_HHMMSS_randomid.tar.gz
   ↓
 [Compress Destination] → tar -czf
   ↓
@@ -123,8 +123,8 @@ Output: backup_created, backup_path, backup_size
 
 **Key Features**:
 - ✅ Automatic compression (tar.gz)
-- ✅ Timestamped filenames
-- ✅ Automatic retention (10 backups)
+- ✅ Descriptive filenames using full destination path
+- ✅ Automatic retention (10 backups per destination)
 - ✅ Graceful skip for first deploy
 - ✅ Size reporting
 
@@ -160,20 +160,20 @@ Input: Source path, destination path
 Output: success=true
 ```
 
-#### Download Subflow:
+#### Download Subflow (using rsync):
 ```
 Input: Remote source, destination
   ↓
-[Verify Source Exists] → [Compress on Remote]
+[Verify Source Exists] → [Check File Size]
   ↓
 [Determine Transfer Mode]
   ├─ Remote → Runner (no destination_host)
   │   ↓
-  │   [Download via SCP] → [Extract on Runner] → [Validate Paths]
+  │   [Rsync from Remote] → rsync -avz → [Validate Paths]
   │
   └─ Remote → Remote (with destination_host)
       ↓
-      [Download to Runner] → [Upload to Destination] → [Extract on Destination]
+      [Rsync to Runner] → [Rsync to Destination] → [Direct Transfer]
   ↓
 [Cleanup Temp Files]
   ↓
@@ -181,14 +181,15 @@ Output: success=true
 ```
 
 **Transfer Modes**:
-- **Remote → Runner**: Files land on runner (ephemeral - use `actions/upload-artifact` to persist)
-- **Remote → Remote**: Server-to-server via runner as intermediary
+- **Remote → Runner**: Files land on runner using rsync (ephemeral - use `actions/upload-artifact` to persist)
+- **Remote → Remote**: Server-to-server via runner as intermediary using rsync
 
 **Key Features**:
-- ✅ Dual transfer modes
-- ✅ Auto-compression
+- ✅ Efficient rsync transfers (no tar/extract overhead)
+- ✅ Built-in compression during transfer (`-z` flag)
+- ✅ Preserves permissions, timestamps, and ownership
+- ✅ Handles hidden files automatically
 - ✅ Integrity checks
-- ✅ Atomic cleanup
 
 **Error Handling**:
 - Source doesn't exist → Stop

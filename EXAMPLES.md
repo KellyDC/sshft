@@ -48,9 +48,9 @@ Scripts cannot execute: `rm -rf /`, `dd` to devices, `shutdown`, `reboot`, `sudo
     key: ${{ secrets.SSH_KEY }}
     source: "/var/log/app.log"
     destination: "./logs/"
-    direction: "download"
+    direction: "download"  # Uses rsync for efficient transfer
 
-# Persist downloaded files
+# Persist downloaded files (runner storage is ephemeral)
 - uses: actions/upload-artifact@v4
   with:
     name: app-logs
@@ -119,7 +119,7 @@ Scripts cannot execute: `rm -rf /`, `dd` to devices, `shutdown`, `reboot`, `sudo
     
     # Destination server
     destination: "/var/www/staging/"
-    direction: "download"
+    direction: "download"  # Uses rsync for direct server-to-server transfer
     destination_host: ${{ secrets.STAGING_HOST }}
     destination_username: ${{ secrets.STAGING_USER }}
     destination_key: ${{ secrets.STAGING_KEY }}
@@ -135,7 +135,7 @@ Scripts cannot execute: `rm -rf /`, `dd` to devices, `shutdown`, `reboot`, `sudo
     key: ${{ secrets.APP_KEY }}
     source: "/data/database/"
     destination: "/backups/$(date +%Y%m%d)/"
-    direction: "download"
+    direction: "download"  # Efficient rsync transfer
     destination_host: ${{ secrets.BACKUP_SERVER }}
     destination_username: ${{ secrets.BACKUP_USER }}
     destination_key: ${{ secrets.BACKUP_KEY }}

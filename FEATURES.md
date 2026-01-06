@@ -9,20 +9,22 @@ Fast feature overview for the sshft GitHub Action - secure SSH file transfer wit
 ## ⚡ Core Features
 
 ### Bidirectional Transfer
-- ✅ **Upload**: Runner → Remote (with automatic backup)
-- ✅ **Download**: Remote → Runner (ephemeral storage)
-- ✅ **Download**: Remote → Remote (server-to-server)
+- ✅ **Upload**: Runner → Remote (tar.gz + scp, with automatic backup)
+- ✅ **Download**: Remote → Runner (rsync, ephemeral storage)
+- ✅ **Download**: Remote → Remote (rsync direct transfer, server-to-server)
 
 ### Smart File Handling
-- ✅ **Auto-compression**: tar.gz for efficient transfer
-- ✅ **Smart detection**: Skips re-compression of compressed files
+- ✅ **Upload compression**: tar.gz for efficient atomic transfers
+- ✅ **Download with rsync**: Efficient sync with compression, preserves attributes
+- ✅ **Smart detection**: Skips re-compression of compressed files (upload)
 - ✅ **Auto-create paths**: Creates missing directories
 - ✅ **Recursive transfers**: Handles directory trees
+- ✅ **Hidden files**: Includes dotfiles automatically
 
 ### Automatic Backup System
 - ✅ **Before every upload**: Creates compressed backup (unless disabled)
-- ✅ **Timestamped**: `backup_name_YYYYMMDD_HHMMSS_randomid.tar.gz`
-- ✅ **Retention policy**: Keeps last 10 backups automatically
+- ✅ **Descriptive names**: Uses full destination path - `var_www_mysite_YYYYMMDD_HHMMSS_randomid.tar.gz`
+- ✅ **Retention policy**: Keeps last 10 backups per destination automatically
 - ✅ **Remote storage**: `~/backups/` on remote server
 - ✅ **Graceful skip**: No backup needed for first-time deployments
 

@@ -60,7 +60,7 @@
     key: ${{ secrets.SSH_KEY }}
     source: "/var/log/app.log"  # Remote path
     destination: "./logs/"  # Runner path
-    direction: "download"
+    direction: "download"  # Uses rsync
 
 # ⚠️ Runner storage is ephemeral. Save as artifacts to persist!
 - uses: actions/upload-artifact@v4
@@ -78,7 +78,7 @@
     key: ${{ secrets.SOURCE_KEY }}
     source: "/data/backup.tar.gz"
     destination: "/backups/"  # Destination server path
-    direction: "download"
+    direction: "download"  # Uses rsync for direct transfer
     destination_host: ${{ secrets.DEST_HOST }}
     destination_username: ${{ secrets.DEST_USER }}
     destination_key: ${{ secrets.DEST_KEY }}
