@@ -228,15 +228,16 @@ runs:
         BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
         RANDOM_ID=$(openssl rand -hex 4)
 
-        # Get destination basename for backup filename
+        # Get destination path and sanitize for backup filename
         DEST_PATH="${{ inputs.destination }}"
         if [[ "$DEST_PATH" == */ ]]; then
           DEST_PATH="${DEST_PATH%/}"
         fi
-        DEST_BASENAME=$(basename "$DEST_PATH")
 
-        # Create backup filename with timestamp
-        BACKUP_FILENAME="backup_${DEST_BASENAME}_${BACKUP_TIMESTAMP}_${RANDOM_ID}.tar.gz"
+        # Create descriptive backup filename using full destination path
+        # Replace / with _ and remove leading slashes/special chars for filename
+        DEST_SAFE=$(echo "$DEST_PATH" | sed 's|^/||; s|/|_|g; s|[^a-zA-Z0-9._-]|_|g')
+        BACKUP_FILENAME="backup_${DEST_SAFE}_${BACKUP_TIMESTAMP}_${RANDOM_ID}.tar.gz"
 
         DEST_EXISTS=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
           if [ -e \"$DEST_PATH\" ]; then
@@ -342,12 +343,12 @@ runs:
           cd \"\$BACKUP_DIR\"
           
           # Count backup files for this destination
-          BACKUP_COUNT=\$(ls -1 backup_${DEST_BASENAME}_*.tar.gz 2>/dev/null | wc -l)
+          BACKUP_COUNT=\$(ls -1 backup_${DEST_SAFE}_*.tar.gz 2>/dev/null | wc -l)
           
           if [ \"\$BACKUP_COUNT\" -gt 10 ]; then
             echo \"Found \$BACKUP_COUNT backups, removing oldest to keep last 10...\"
             # Remove oldest backups, keep last 10
-            ls -1t backup_${DEST_BASENAME}_*.tar.gz | tail -n +11 | xargs -r rm -f
+            ls -1t backup_${DEST_SAFE}_*.tar.gz | tail -n +11 | xargs -r rm -f
             echo \"Old backups cleaned up\"
           else
             echo \"Backup count: \$BACKUP_COUNT (within retention limit)\"

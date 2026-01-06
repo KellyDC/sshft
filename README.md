@@ -105,8 +105,8 @@ jobs:
 
 **Backup Features:**
 - ✅ Automatic backup creation before file transfer (upload only)
-- ✅ Backups stored in `~/backups` on remote server (user's home directory)
-- ✅ Unique timestamped filenames: `backup_{destination}_{YYYYMMDD_HHMMSS}_{random_id}.tar.gz`
+- ✅ Backups stored in `~/backups/` on remote server (user's home directory)
+- ✅ Descriptive filenames using full destination path: `backup_var_www_mysite_{YYYYMMDD_HHMMSS}_{random_id}.tar.gz`
 - ✅ Efficient tar.gz compression
 - ✅ Automatic retention policy (keeps last 10 backups per destination)
 - ✅ Comprehensive error handling
