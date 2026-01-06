@@ -237,10 +237,7 @@ runs:
 
         # Create backup filename with timestamp
         BACKUP_FILENAME="backup_${DEST_BASENAME}_${BACKUP_TIMESTAMP}_${RANDOM_ID}.tar.gz"
-        BACKUP_DIR="~/backups"
-        BACKUP_PATH="$BACKUP_DIR/$BACKUP_FILENAME"
 
-        # Check if destination exists on remote server
         DEST_EXISTS=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
           if [ -e \"$DEST_PATH\" ]; then
             echo 'exists'
@@ -263,15 +260,16 @@ runs:
         # Create backup directory on remote server if it doesn't exist
         if ! ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
           set -e
-          if [ ! -d \"$BACKUP_DIR\" ]; then
-            mkdir -p \"$BACKUP_DIR\" && echo 'Backup directory created at: $BACKUP_DIR'
-            chmod 700 \"$BACKUP_DIR\"
+          BACKUP_DIR=~/backups
+          if [ ! -d \"\$BACKUP_DIR\" ]; then
+            mkdir -p \"\$BACKUP_DIR\" && echo \"Backup directory created at: \$BACKUP_DIR\"
+            chmod 700 \"\$BACKUP_DIR\"
           else
-            echo 'Using existing backup directory: $BACKUP_DIR'
+            echo \"Using existing backup directory: \$BACKUP_DIR\"
           fi
           
           # Verify backup directory is writable
-          if [ ! -w \"$BACKUP_DIR\" ]; then
+          if [ ! -w \"\$BACKUP_DIR\" ]; then
             echo 'Error: Backup directory is not writable'
             exit 1
           fi
@@ -285,23 +283,27 @@ runs:
         BACKUP_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
           set -e
           
+          BACKUP_DIR=~/backups
+          BACKUP_PATH=\"\$BACKUP_DIR/$BACKUP_FILENAME\"
+          
           # Get parent directory and basename for tar
           DEST_PARENT=\$(dirname \"$DEST_PATH\")
           DEST_BASE=\$(basename \"$DEST_PATH\")
           
           # Create the backup with compression
-          if tar -czf \"$BACKUP_PATH\" -C \"\$DEST_PARENT\" \"\$DEST_BASE\" 2>&1; then
+          if tar -czf \"\$BACKUP_PATH\" -C \"\$DEST_PARENT\" \"\$DEST_BASE\" 2>&1; then
             # Verify the backup was created successfully
-            if [ ! -f \"$BACKUP_PATH\" ]; then
+            if [ ! -f \"\$BACKUP_PATH\" ]; then
               echo 'Error: Backup file was not created'
               exit 1
             fi
             
             # Get backup file size
-            BACKUP_SIZE=\$(du -h \"$BACKUP_PATH\" | cut -f1)
-            echo \"Backup created successfully: $BACKUP_PATH\"
+            BACKUP_SIZE=\$(du -h \"\$BACKUP_PATH\" | cut -f1)
+            echo \"Backup created successfully: \$BACKUP_PATH\"
             echo \"Backup size: \$BACKUP_SIZE\"
             echo \"SIZE:\$BACKUP_SIZE\"
+            echo \"PATH:\$BACKUP_PATH\"
           else
             echo 'Error: Failed to create backup archive'
             exit 1
@@ -312,8 +314,9 @@ runs:
           exit 1
         }
 
-        # Extract backup size from output
+        # Extract backup info from output
         BACKUP_SIZE=$(echo "$BACKUP_OUTPUT" | grep "^SIZE:" | cut -d: -f2)
+        BACKUP_PATH=$(echo "$BACKUP_OUTPUT" | grep "^PATH:" | cut -d: -f2-)
 
         # Output backup information
         echo "$BACKUP_OUTPUT"
@@ -335,7 +338,8 @@ runs:
         echo "Checking backup retention policy..."
         ssh -F "$SSH_CONFIG_FILE" ${{ inputs.host }} "
           set -e
-          cd \"$BACKUP_DIR\"
+          BACKUP_DIR=~/backups
+          cd \"\$BACKUP_DIR\"
           
           # Count backup files for this destination
           BACKUP_COUNT=\$(ls -1 backup_${DEST_BASENAME}_*.tar.gz 2>/dev/null | wc -l)
