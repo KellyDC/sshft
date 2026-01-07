@@ -1097,22 +1097,31 @@ runs:
         elif [ -n "${{ inputs.post_script_path }}" ]; then
           echo "Executing script from remote server path: ${{ inputs.post_script_path }}"
           
+          # Expand the script path on the remote server (handle tilde expansion)
+          EXPANDED_SCRIPT_PATH=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "echo \"${{ inputs.post_script_path }}\"" 2>&1) || {
+            echo "Error: Failed to expand script path"
+            echo "error=Failed to expand script path" >> $GITHUB_OUTPUT
+            exit 0
+          }
+          
+          echo "Expanded script path: $EXPANDED_SCRIPT_PATH"
+          
           # Check if the script file exists on remote server
-          if ! ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -f \"${{ inputs.post_script_path }}\"" 2>&1; then
-            echo "Error: Script file does not exist at path: ${{ inputs.post_script_path }}"
+          if ! ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -f \"$EXPANDED_SCRIPT_PATH\"" 2>&1; then
+            echo "Error: Script file does not exist at path: $EXPANDED_SCRIPT_PATH"
             echo "error=Script file does not exist" >> $GITHUB_OUTPUT
             exit 0
           fi
           
           # Check if the script file is readable
-          if ! ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -r \"${{ inputs.post_script_path }}\"" 2>&1; then
-            echo "Error: Script file is not readable: ${{ inputs.post_script_path }}"
+          if ! ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -r \"$EXPANDED_SCRIPT_PATH\"" 2>&1; then
+            echo "Error: Script file is not readable: $EXPANDED_SCRIPT_PATH"
             echo "error=Script file is not readable" >> $GITHUB_OUTPUT
             exit 0
           fi
           
           # Check if file is empty
-          FILE_SIZE=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "stat -c%s \"${{ inputs.post_script_path }}\" 2>/dev/null || stat -f%z \"${{ inputs.post_script_path }}\" 2>/dev/null || echo 0")
+          FILE_SIZE=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "stat -c%s \"$EXPANDED_SCRIPT_PATH\" 2>/dev/null || stat -f%z \"$EXPANDED_SCRIPT_PATH\" 2>/dev/null || echo 0")
           if [ "$FILE_SIZE" -eq 0 ]; then
             echo "Error: Script file is empty"
             echo "error=Script file is empty" >> $GITHUB_OUTPUT
@@ -1121,7 +1130,7 @@ runs:
           
           # Comprehensive syntax validation
           echo "Validating script syntax..."
-          SYNTAX_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "bash -n \"${{ inputs.post_script_path }}\"" 2>&1) || SYNTAX_ERROR=$?
+          SYNTAX_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "bash -n \"$EXPANDED_SCRIPT_PATH\"" 2>&1) || SYNTAX_ERROR=$?
           
           if [ -n "$SYNTAX_ERROR" ] && [ "$SYNTAX_ERROR" -ne 0 ]; then
             echo "Error: Script has syntax errors:"
@@ -1137,7 +1146,7 @@ runs:
           echo "Checking for dangerous commands..."
           DANGEROUS_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
             set -e
-            SCRIPT_PATH=\"${{ inputs.post_script_path }}\"
+            SCRIPT_PATH=\"$EXPANDED_SCRIPT_PATH\"
             
             # Check for extremely dangerous patterns
             if grep -qE 'rm[[:space:]]+-rf[[:space:]]*/|rm[[:space:]]+-rf[[:space:]]*~|rm[[:space:]]+-rf[[:space:]]*/' \"\$SCRIPT_PATH\" 2>/dev/null; then
@@ -1187,7 +1196,7 @@ runs:
           
           VALIDATION_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
             set -e
-            SCRIPT_PATH=\"${{ inputs.post_script_path }}\"
+            SCRIPT_PATH=\"$EXPANDED_SCRIPT_PATH\"
             
             # Check for unmatched braces
             OPEN_BRACES=\$(grep -o '{' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
@@ -1234,7 +1243,7 @@ runs:
           echo "✓ Script syntax validation passed"
           
           # Check if the script is executable, if not try to execute with bash
-          if ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -x \"${{ inputs.post_script_path }}\"" 2>&1; then
+          if ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "test -x \"$EXPANDED_SCRIPT_PATH\"" 2>&1; then
             # Script is executable, run it directly with restrictions
             echo "Executing script on remote server in restricted mode..."
             SCRIPT_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
@@ -1245,7 +1254,7 @@ runs:
               ulimit -v 2097152  # Max virtual memory 2GB
               
               # Execute with timeout (10 minutes max)
-              timeout 600 \"${{ inputs.post_script_path }}\"
+              timeout 600 \"$EXPANDED_SCRIPT_PATH\"
             " 2>&1) || SCRIPT_EXIT_CODE=$?
           else
             # Script is not executable, run with bash interpreter
@@ -1258,7 +1267,7 @@ runs:
               ulimit -v 2097152  # Max virtual memory 2GB
               
               # Execute with timeout (10 minutes max)
-              timeout 600 bash \"${{ inputs.post_script_path }}\"
+              timeout 600 bash \"$EXPANDED_SCRIPT_PATH\"
             " 2>&1) || SCRIPT_EXIT_CODE=$?
           fi
           
@@ -1275,7 +1284,7 @@ runs:
           echo "output<<SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
           echo "$SANITIZED_OUTPUT" >> $GITHUB_OUTPUT
           echo "SSHFT_OUTPUT_EOF" >> $GITHUB_OUTPUT
-          echo "✓ Script executed successfully from path: ${{ inputs.post_script_path }}"
+          echo "✓ Script executed successfully from path: $EXPANDED_SCRIPT_PATH"
         fi
 
         # Cleanup
