@@ -981,12 +981,18 @@ runs:
             exit 0
           fi
           
-          # Check for privilege escalation attempts
+          # Check for privilege escalation attempts (allow sudo if running as root)
           if grep -qE '^[[:space:]]*(sudo|su[[:space:]])' "$LOCAL_TEMP_SCRIPT" 2>/dev/null; then
-            echo "Error: Script contains privilege escalation commands (sudo/su)"
-            echo "error=Script blocked: privilege escalation attempt" >> $GITHUB_OUTPUT
-            rm -f "$LOCAL_TEMP_SCRIPT"
-            exit 0
+            # Check if remote user is root - if so, allow sudo for deployment scenarios
+            REMOTE_USER_CHECK=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "id -u" 2>/dev/null || echo "1000")
+            if [ "$REMOTE_USER_CHECK" != "0" ]; then
+              echo "Error: Script contains privilege escalation commands (sudo/su) but user is not root"
+              echo "error=Script blocked: privilege escalation attempt" >> $GITHUB_OUTPUT
+              rm -f "$LOCAL_TEMP_SCRIPT"
+              exit 0
+            else
+              echo "Warning: Script contains sudo commands, but allowing since user is root (deployment mode)"
+            fi
           fi
           
           # Check for unmatched quotes
@@ -1180,9 +1186,15 @@ runs:
               exit 1
             fi
             
+            # Check for privilege escalation (allow sudo if running as root)
             if grep -qE '^[[:space:]]*(sudo|su[[:space:]])' \"\$SCRIPT_PATH\" 2>/dev/null; then
-              echo 'ERROR:Privilege escalation detected'
-              exit 1
+              # Check if current user is root - if so, allow sudo for deployment scenarios
+              if [ \"\$(id -u)\" != \"0\" ]; then
+                echo 'ERROR:Privilege escalation detected but user is not root'
+                exit 1
+              else
+                echo 'WARNING:Privilege escalation detected but allowed (root user, deployment mode)'
+              fi
             fi
             
             if grep -qE 'curl.*\\|[[:space:]]*bash|wget.*\\|[[:space:]]*bash|curl.*\\|[[:space:]]*sh|wget.*\\|[[:space:]]*sh' \"\$SCRIPT_PATH\" 2>/dev/null; then
