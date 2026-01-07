@@ -1200,51 +1200,8 @@ runs:
             exit 0
           fi
           
-          VALIDATION_OUTPUT=$(ssh -F "$SSH_CONFIG_FILE" "${{ inputs.host }}" "
-            set -e
-            SCRIPT_PATH=${{ inputs.post_script_path }}
-            
-            # Check for unmatched braces
-            OPEN_BRACES=\$(grep -o '{' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
-            CLOSE_BRACES=\$(grep -o '}' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
-            if [ \"\$OPEN_BRACES\" -ne \"\$CLOSE_BRACES\" ]; then
-              echo \"ERROR:Unmatched braces (open: \$OPEN_BRACES, close: \$CLOSE_BRACES)\"
-              exit 1
-            fi
-            
-            # Check for unmatched parentheses
-            OPEN_PARENS=\$(grep -o '(' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
-            CLOSE_PARENS=\$(grep -o ')' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
-            if [ \"\$OPEN_PARENS\" -ne \"\$CLOSE_PARENS\" ]; then
-              echo \"ERROR:Unmatched parentheses (open: \$OPEN_PARENS, close: \$CLOSE_PARENS)\"
-              exit 1
-            fi
-            
-            # Check for unmatched brackets
-            OPEN_BRACKETS=\$(grep -o '\[' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
-            CLOSE_BRACKETS=\$(grep -o '\]' \"\$SCRIPT_PATH\" 2>/dev/null | wc -l)
-            if [ \"\$OPEN_BRACKETS\" -ne \"\$CLOSE_BRACKETS\" ]; then
-              echo \"ERROR:Unmatched brackets (open: \$OPEN_BRACKETS, close: \$CLOSE_BRACKETS)\"
-              exit 1
-            fi
-            
-            # Check for pipes without commands
-            if grep -qE '\|[[:space:]]*(\||;|\$)' \"\$SCRIPT_PATH\" 2>/dev/null; then
-              echo \"WARNING:Pipeline without command detected\"
-            fi
-            
-            echo \"OK:Validation passed\"
-          " 2>&1) || VALIDATION_ERROR=$?
-          
-          if [ -n "$VALIDATION_ERROR" ] && [ "$VALIDATION_ERROR" -ne 0 ]; then
-            echo "Error: Script validation failed:"
-            echo "$VALIDATION_OUTPUT" | grep "^ERROR:" | sed 's/^ERROR://'
-            echo "error=Script validation failed: malformed syntax" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Show warnings if any
-          echo "$VALIDATION_OUTPUT" | grep "^WARNING:" | sed 's/^WARNING:/Warning: /' || true
+          # Note: bash -n already performed comprehensive syntax validation above
+          # Additional pattern-based checks are unreliable and produce false positives
           
           echo "✓ Script syntax validation passed"
           
